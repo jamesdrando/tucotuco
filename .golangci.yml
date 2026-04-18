@@ -1,0 +1,12 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - gofmt
+    - godot
+    - govet
+    - revive
+    - staticcheck
+    - unused

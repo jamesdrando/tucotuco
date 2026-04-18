@@ -383,6 +383,12 @@ See §3.6 for type details.
 
 _No open questions._
 
+## SPEC_CHANGE_NOTES
+
+SPEC_CHANGE [T-010] 2026-04-18
+- `DECIMAL` is represented by the in-repo `internal/types.Decimal` type backed by `math/big`, not by `*apd.Decimal`.
+- Rationale: Phase 1 now requires a first-party arbitrary-precision decimal implementation with no external dependency fetch, while preserving exact-decimal comparison semantics and leaving room for later coercion/cast work.
+
 > To add a question: append a block:
 > ```
 > SPEC_QUESTION [task-id] YYYY-MM-DD

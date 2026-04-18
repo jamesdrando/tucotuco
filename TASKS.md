@@ -14,23 +14,23 @@
 > Goal: Empty repo → compiling skeleton with CI.
 > All Phase 0 tasks are serial and must finish before any Phase 1 work begins.
 
-- [ ] **T-001** — Initialise Go module `github.com/yourorg/tucotuco`, `go 1.22+` `[serial]`
+- [x] **T-001** — Initialise Go module `github.com/yourorg/tucotuco`, `go 1.22+` `[serial]`
   - Acceptance: `go build ./...` succeeds on empty skeleton
   - Deliver: `go.mod`, `go.sum`, root `doc.go`
 
-- [ ] **T-002** — Establish directory layout per `INDEX.md` `[serial]` `depends: T-001`
+- [x] **T-002** — Establish directory layout per `INDEX.md` `[serial]` `depends: T-001`
   - Acceptance: All `internal/` and `pkg/` packages exist as empty stubs with package declarations
 
-- [ ] **T-003** — CI pipeline (GitHub Actions or equivalent) `[serial]` `depends: T-001`
+- [x] **T-003** — CI pipeline (GitHub Actions or equivalent) `[serial]` `depends: T-001`
   - Jobs: `lint` (golangci-lint), `test` (race detector on), `build`
   - Acceptance: All three jobs green on push
 
-- [ ] **T-004** — `golangci-lint` config (`.golangci.yml`) `[parallel-safe]` `depends: T-001`
+- [x] **T-004** — `golangci-lint` config (`.golangci.yml`) `[parallel-safe]` `depends: T-001`
   - Enable: `errcheck`, `govet`, `staticcheck`, `unused`, `gofmt`, `godot`, `revive`
 
-- [ ] **T-005** — `Makefile` with targets: `build`, `test`, `lint`, `bench`, `compliance` `[parallel-safe]` `depends: T-002`
+- [x] **T-005** — `Makefile` with targets: `build`, `test`, `lint`, `bench`, `compliance` `[parallel-safe]` `depends: T-002`
 
-- [ ] **T-006** — Logging / diagnostics package `internal/diag` `[serial]` `depends: T-002`
+- [x] **T-006** — Logging / diagnostics package `internal/diag` `[serial]` `depends: T-002`
   - Structured `slog`-based; carries `SQLSTATE`, source position
   - Acceptance: unit tests for Error, Warning, Info levels
 
@@ -46,11 +46,11 @@
 
 ### 1A — Type System
 
-- [ ] **T-010** — Define `Value` union type (SPEC §3) `[serial]` `depends: M0`
+- [x] **T-010** — Define `Value` union type (SPEC §3) `[serial]` `depends: M0`
   - Represents: NULL, bool, int16/32/64, float32/64, string, []byte, time.Time, Interval, Decimal, Array, Row
   - Acceptance: `Value.Equal`, `Value.Compare`, `Value.IsNull` all tested
 
-- [ ] **T-011** — SQL type descriptors (`TypeDesc`) `[parallel-safe]` `depends: T-010`
+- [x] **T-011** — SQL type descriptors (`TypeDesc`) `[parallel-safe]` `depends: T-010`
   - `TypeKind` enum, precision/scale/length, nullable flag
   - Acceptance: round-trip serialise/deserialise
 
@@ -61,10 +61,10 @@
 
 ### 1B — Lexer
 
-- [ ] **T-020** — Keyword table (SQL-92 reserved + non-reserved words) `[parallel-safe]` `depends: M0`
+- [x] **T-020** — Keyword table (SQL-92 reserved + non-reserved words) `[parallel-safe]` `depends: M0`
   - File: `internal/token/keywords.go` (generated from embedded list)
 
-- [ ] **T-021** — Lexer core: tokenise SQL byte stream `[serial]` `depends: T-020`
+- [x] **T-021** — Lexer core: tokenise SQL byte stream `[serial]` `depends: T-020`
   - Tokens: keyword, identifier, string literal, numeric literal, operator, punctuation, EOF, ERROR
   - Position tracking: line, column, byte offset
   - Acceptance: 200+ lexer unit tests; fuzz target `FuzzLexer`
@@ -73,13 +73,13 @@
 
 ### 1C — AST
 
-- [ ] **T-030** — AST node interface and visitor pattern `[serial]` `depends: M0`
+- [x] **T-030** — AST node interface and visitor pattern `[serial]` `depends: M0`
   - `Node` interface: `Pos() token.Pos`, `End() token.Pos`, `Accept(Visitor) any`
   - Visitor interface with one method per node type
 
-- [ ] **T-031** — Literal expression nodes (integer, float, string, bool, NULL, param) `[parallel-safe]` `depends: T-030`
+- [x] **T-031** — Literal expression nodes (integer, float, string, bool, NULL, param) `[parallel-safe]` `depends: T-030`
 
-- [ ] **T-032** — Identifier, qualified name, star nodes `[parallel-safe]` `depends: T-030`
+- [x] **T-032** — Identifier, qualified name, star nodes `[parallel-safe]` `depends: T-030`
 
 - [ ] **T-033** — Binary/unary expression nodes `[parallel-safe]` `depends: T-031,T-032`
 
@@ -133,9 +133,9 @@
 
 ### 1G — Storage Engine
 
-- [ ] **T-070** — `Storage` interface: `Insert`, `Scan`, `Update`, `Delete`, `NewTransaction` `[serial]` `depends: M0`
+- [x] **T-070** — `Storage` interface: `Insert`, `Scan`, `Update`, `Delete`, `NewTransaction` `[serial]` `depends: M0`
 
-- [ ] **T-071** — In-memory row store (`internal/storage/memory`) `[serial]` `depends: T-070,T-010`
+- [x] **T-071** — In-memory row store (`internal/storage/memory`) `[serial]` `depends: T-070,T-010`
   - Heap: slice of `[]Value` rows
   - Concurrent-read, exclusive-write via RWMutex
   - Acceptance: 50+ storage unit tests
