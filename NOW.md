@@ -10,7 +10,7 @@
 
 ## CURRENT STATE
 
-**Date:** 2026-04-18
+**Date:** 2026-04-19
 **Phase:** Phase 1 — Core Engine (In-Memory, SQL-92 Subset)
 **Milestone in progress:** M1
 
@@ -18,35 +18,39 @@
 
 ## JUST DONE
 
-Completed `TASKS.md` T-062 and T-063 using `SPEC.md` §7, §8, and §11, building on the current analyzer resolver/type-checker state.
+Completed `TASKS.md` T-080 and T-081 using `SPEC.md` §7 and §8, establishing the first logical planner contracts plus the initial analyzed-`SELECT` builder slice.
 
-- Extended `internal/analyzer/typecheck.go` to invoke a dedicated post-typecheck aggregate-placement pass and to enforce remaining write-time checks for `CREATE TABLE` defaults.
-- Added `internal/analyzer/writecheck.go` and `internal/analyzer/writecheck_test.go` to validate `INSERT` row/query column counts, `UPDATE` tuple assignment shape, omitted required columns, `DEFAULT VALUES`, explicit `NULL` writes to `NOT NULL` targets, and `NOT NULL DEFAULT NULL`.
-- Added `internal/analyzer/aggregate_validation.go` and `internal/analyzer/aggregate_validation_test.go` to validate aggregate placement across the current Phase 1 CST surface, reject nested aggregates, recurse through derived tables/subqueries, and enforce grouped-query column usage without mutating parser nodes or resolver/type side tables.
-- Updated the existing analyzer tests that exercised aggregate typing so they still cover type assignment on semantically valid grouped queries under the new placement rules.
-- Verified `env GOCACHE=/tmp/tucotuco-go-build go test ./internal/analyzer`.
-- Attempted targeted lint, but no `golangci-lint` binary was available in the workspace (`./.bin/golangci-lint` missing and none on `PATH`).
-- Marked `TASKS.md` T-062 and T-063 complete after targeted package tests passed.
+- Added `internal/planner/plan.go` with the `Plan` interface, `Kind` enum, output `Column` metadata, `Projection`, and the basic logical nodes `Scan`, `Filter`, `Project`, and `Limit`.
+- Added `internal/planner/builder.go` with a `Builder` that translates analyzed `SELECT` statements into logical plans over `Scan`, `Filter`, and `Project`, recurses through derived-table subqueries, and emits planner diagnostics for unsupported Phase 1 query features such as `ORDER BY`, `GROUP BY`, `DISTINCT`, joins, and aggregate queries.
+- Kept planner output metadata sourced from analyzer `Bindings` and `Types`, including star expansion through analyzer side tables instead of re-resolving names or types inside the planner.
+- Added `internal/planner/plan_test.go` and `internal/planner/builder_test.go` covering node construction, output-schema propagation, defensive slice behavior, star expansion, derived-table planning, and unsupported query diagnostics.
+- Restored a repo-local `golangci-lint` binary at `./.bin/golangci-lint` after the prior session's missing-tool blocker.
+- Verified `gofmt -w internal/planner/*.go`.
+- Verified `env GOCACHE=/tmp/tucotuco-go-build go test ./internal/planner`.
+- Verified `env GOCACHE=/tmp/tucotuco-go-build go test ./...`.
+- Verified `env GOCACHE=/tmp/tucotuco-go-build GOLANGCI_LINT_CACHE=/tmp/tucotuco-golangci-lint-cache ./.bin/golangci-lint run ./internal/planner`.
+- Observed that `env GOCACHE=/tmp/tucotuco-go-build GOLANGCI_LINT_CACHE=/tmp/tucotuco-golangci-lint-cache ./.bin/golangci-lint run ./...` currently reports `no go files to analyze`; targeted package lint succeeded, but future sessions should prefer explicit package paths until the repo-wide invocation is understood.
+- Marked `TASKS.md` T-080 and T-081 complete after planner tests and targeted lint passed.
 
 ---
 
 ## NEXT
 
-**Task(s) to execute:** T-080
+**Task(s) to execute:** T-082
 
 **Instructions for the incoming agent:**
 
 1. Read `AGENTS.md` and `INDEX.md` again before starting Phase 1 work.
-2. Start **T-080** in `internal/planner/`, using the now-validated analyzer output as the semantic boundary rather than adding more parser/analyzer features first.
-3. Keep the first planner slice narrow: define the logical plan node interface plus the basic `Scan`, `Filter`, `Project`, and `Limit` nodes required by `TASKS.md`.
-4. Read the planner-related `INDEX.md` interface map before coding and keep the new planner types aligned with the existing package layout and naming style.
-5. Add focused planner tests for node construction / formatting contracts as the first acceptance layer before attempting plan-builder work in `T-081`.
-6. Run targeted validation for the planner package; if lint is required, first restore or install a `golangci-lint` binary because none was available during the analyzer closeout.
-7. Update `TASKS.md`, `NOW.md`, and `SPEC.md` if later design decisions diverge from the current spec text.
+2. Start **T-082** in `internal/planner/`, reusing `Plan.String()` for node summaries rather than inventing a second label format for EXPLAIN output.
+3. Keep the printer aligned with the current tree shape from `builder.go`: preorder or indented tree output over `Project`, `Filter`, `Scan`, and later `Limit` nodes, with stable formatting suitable for golden tests.
+4. Add focused planner tests that build analyzed `SELECT` plans through the real builder and then assert EXPLAIN output strings, especially for derived-table nesting and unsupported-feature diagnostics not leaking into printer code.
+5. Continue using analyzer `Bindings` and `Types` only through the built plan; the printer should not re-open analyzer semantics once a plan exists.
+6. Use the restored repo-local linter with writable caches for validation: `env GOCACHE=/tmp/tucotuco-go-build GOLANGCI_LINT_CACHE=/tmp/tucotuco-golangci-lint-cache ./.bin/golangci-lint run <pkg>`.
+7. `T-090` is now also unblocked, but `T-082` remains the first unblocked task in `TASKS.md`; update `NOW.md` accordingly if you choose to branch into executor work on a second stream.
 
 **Spec references:** `SPEC.md` §7, §8
 
-**Estimated parallelism available:** 1 stream (`T-080`)
+**Estimated parallelism available:** 2 streams (`T-082`, `T-090`)
 
 ---
 
@@ -61,7 +65,7 @@ _None._
 | Milestone | Status | Tasks remaining |
 |-----------|--------|----------------|
 | M0 — Repo Ready | ✅ Complete | None |
-| M1 — SQL-92 Core | 🟨 In progress | T-037 to T-113 (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-060`, `T-061`, `T-062`, `T-063`, `T-070`, `T-071`, `T-072`, `T-073`, `T-112` complete) |
+| M1 — SQL-92 Core | 🟨 In progress | T-037 to T-113 (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-060`, `T-061`, `T-062`, `T-063`, `T-070`, `T-071`, `T-072`, `T-073`, `T-080`, `T-081`, `T-112` complete) |
 | M2 — SQL-92 Full + Storage | 🔲 Not started | T-120 to T-171 |
 | M3 — SQL:1999 | 🔲 Not started | T-200 to T-261 |
 | M4 — SQL:2003 + Wire | 🔲 Not started | T-300 to T-312 |
@@ -89,3 +93,4 @@ _None._
 | #010 | 2026-04-18 | Codex | Completed T-060 | Added and validated the first analyzer resolver over the parser-local CST, then advanced the baton to `T-061` |
 | #011 | 2026-04-18 | Codex | Completed T-061 | Added the first analyzer type-check pass with CST type-name normalization, focused semantic diagnostics/tests, and targeted analyzer test/lint validation, then advanced the baton to `T-062` and `T-063` |
 | #012 | 2026-04-18 | Codex | Completed T-062 and T-063 | Added analyzer-side write validation plus aggregate/grouped-query placement checks, validated `internal/analyzer` with focused package tests, and moved the baton to planner task `T-080` |
+| #013 | 2026-04-19 | Codex | Completed T-080 and T-081 | Added the first logical planner node contracts plus the initial analyzed-SELECT builder, restored the repo-local linter binary, validated planner lint/tests, and advanced the baton to `T-082` |

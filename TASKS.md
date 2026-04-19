@@ -156,9 +156,9 @@
 
 ### 1H — Query Planner (Logical)
 
-- [ ] **T-080** — Logical plan node interface and basic nodes: `Scan`, `Filter`, `Project`, `Limit` `[serial]` `depends: T-062`
+- [x] **T-080** — Logical plan node interface and basic nodes: `Scan`, `Filter`, `Project`, `Limit` `[serial]` `depends: T-062`
 
-- [ ] **T-081** — Plan builder: translate analyzed AST → logical plan `[serial]` `depends: T-080`
+- [x] **T-081** — Plan builder: translate analyzed AST → logical plan `[serial]` `depends: T-080`
 
 - [ ] **T-082** — Logical plan printer (EXPLAIN output) `[parallel-safe]` `depends: T-081`
 
