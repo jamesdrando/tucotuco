@@ -54,10 +54,10 @@
   - `TypeKind` enum, precision/scale/length, nullable flag
   - Acceptance: round-trip serialise/deserialise
 
-- [ ] **T-012** — Type coercion rules (implicit cast table, SPEC §3) `[parallel-safe]` `depends: T-011`
+- [x] **T-012** — Type coercion rules (implicit cast table, SPEC §3) `[parallel-safe]` `depends: T-011`
   - Acceptance: 50+ coercion rule tests covering all type pairs
 
-- [ ] **T-013** — `CAST` / `TRY_CAST` executor functions `[parallel-safe]` `depends: T-012`
+- [x] **T-013** — `CAST` / `TRY_CAST` executor functions `[parallel-safe]` `depends: T-012`
 
 ### 1B — Lexer
 
@@ -69,7 +69,7 @@
   - Position tracking: line, column, byte offset
   - Acceptance: 200+ lexer unit tests; fuzz target `FuzzLexer`
 
-- [ ] **T-022** — Extend keyword table for SQL-99 additions `[parallel-safe]` `depends: T-021`
+- [x] **T-022** — Extend keyword table for SQL-99 additions `[parallel-safe]` `depends: T-021`
 
 ### 1C — AST
 
@@ -81,51 +81,59 @@
 
 - [x] **T-032** — Identifier, qualified name, star nodes `[parallel-safe]` `depends: T-030`
 
-- [ ] **T-033** — Binary/unary expression nodes `[parallel-safe]` `depends: T-031,T-032`
+- [x] **T-033** — Binary/unary expression nodes `[parallel-safe]` `depends: T-031,T-032`
 
-- [ ] **T-034** — SELECT statement AST (FROM, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT) `[serial]` `depends: T-033`
+- [x] **T-034** — SELECT statement AST (FROM, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT) `[serial]` `depends: T-033`
 
-- [ ] **T-035** — INSERT / UPDATE / DELETE AST nodes `[parallel-safe]` `depends: T-033`
+- [x] **T-035** — INSERT / UPDATE / DELETE AST nodes `[parallel-safe]` `depends: T-033`
 
-- [ ] **T-036** — CREATE TABLE / DROP TABLE AST nodes `[parallel-safe]` `depends: T-033`
+- [x] **T-036** — CREATE TABLE / DROP TABLE AST nodes `[parallel-safe]` `depends: T-033`
 
-- [ ] **T-037** — AST pretty-printer (for debug and golden tests) `[parallel-safe]` `depends: T-034,T-035,T-036`
+- [x] **T-037** — AST pretty-printer (for debug and golden tests) `[parallel-safe]` `depends: T-034,T-035,T-036`
+  - Implemented in `internal/ast/pretty.go` and `internal/ast/pretty_test.go`; visitor-backed structural printer and table-driven goldens validated with targeted package tests and lint.
 
 ### 1D — Parser
 
-- [ ] **T-040** — Parser scaffold: token stream, `peek`/`consume`, error recovery `[serial]` `depends: T-021,T-030`
+- [x] **T-040** — Parser scaffold: token stream, `peek`/`consume`, error recovery `[serial]` `depends: T-021,T-030`
 
-- [ ] **T-041** — Parse scalar expressions (literals, identifiers, operators, CASE, CAST, function calls) `[serial]` `depends: T-040,T-031,T-032,T-033`
+- [x] **T-041** — Parse scalar expressions (literals, identifiers, operators, CASE, CAST, function calls) `[serial]` `depends: T-040,T-031,T-032,T-033`
   - Operator precedence: full SQL-92 precedence table
   - Acceptance: 100+ expression parse tests; fuzz target `FuzzParseExpr`
 
-- [ ] **T-042** — Parse SELECT statement (all SQL-92 clauses) `[serial]` `depends: T-041,T-034`
+- [x] **T-042** — Parse SELECT statement (all SQL-92 clauses) `[serial]` `depends: T-041,T-034`
   - Acceptance: 100+ SELECT parse tests; golden AST output
+  - Parser-local CST and focused parse tests landed in `internal/parser` for `SELECT` clauses, joins, derived tables, and ordering; validated with targeted package tests and lint.
 
-- [ ] **T-043** — Parse INSERT / UPDATE / DELETE `[parallel-safe]` `depends: T-041,T-035`
+- [x] **T-043** — Parse INSERT / UPDATE / DELETE `[parallel-safe]` `depends: T-041,T-035`
+  - Parser-local CST and focused parse tests landed in `internal/parser` for `INSERT` (`VALUES` / `SELECT` / `DEFAULT VALUES`), `UPDATE`, and `DELETE`; validated with targeted package tests and lint.
 
-- [ ] **T-044** — Parse CREATE TABLE / DROP TABLE `[parallel-safe]` `depends: T-041,T-036`
+- [x] **T-044** — Parse CREATE TABLE / DROP TABLE `[parallel-safe]` `depends: T-041,T-036`
+  - Parser-local CST and focused parse tests landed in `internal/parser` for `CREATE TABLE` / `DROP TABLE`, including flat type, constraint, and reference metadata; validated with targeted package tests and lint.
 
-- [ ] **T-045** — Parse BEGIN / COMMIT / ROLLBACK `[parallel-safe]` `depends: T-040`
+- [x] **T-045** — Parse BEGIN / COMMIT / ROLLBACK `[parallel-safe]` `depends: T-040`
 
-- [ ] **T-046** — Multi-statement parsing (semicolon-separated) `[parallel-safe]` `depends: T-042,T-043,T-044,T-045`
+- [x] **T-046** — Multi-statement parsing (semicolon-separated) `[parallel-safe]` `depends: T-042,T-043,T-044,T-045`
+  - `ParseScript` now skips empty semicolon-only segments while preserving existing semicolon recovery and EOF behavior; focused parser tests for repeated/trailing semicolons and recovery validated with targeted package tests and lint.
 
 ### 1E — Catalog
 
-- [ ] **T-050** — `Catalog` interface + in-memory implementation `[serial]` `depends: T-011`
+- [x] **T-050** — `Catalog` interface + in-memory implementation `[serial]` `depends: T-011`
   - Operations: `CreateSchema`, `DropSchema`, `CreateTable`, `DropTable`, `LookupTable`, `LookupColumn`
   - Thread-safe
 
-- [ ] **T-051** — Column descriptor, table descriptor, schema descriptor `[parallel-safe]` `depends: T-050`
+- [x] **T-051** — Column descriptor, table descriptor, schema descriptor `[parallel-safe]` `depends: T-050`
 
-- [ ] **T-052** — Catalog persistence (write catalog to disk as JSON/gob, reload on open) `[serial]` `depends: T-051`
+- [x] **T-052** — Catalog persistence (write catalog to disk as JSON/gob, reload on open) `[serial]` `depends: T-051`
   - Phase 1 uses a simple file; Phase 2 moves to WAL-backed pages
+  - Implemented Phase 1 versioned JSON persistence via `SaveFile` / `LoadFile` in `internal/catalog`, replaying `CreateSchema` / `CreateTable` on load with round-trip and isolation tests; validated with targeted package tests and lint.
 
 ### 1F — Semantic Analyzer
 
-- [ ] **T-060** — Name resolution pass (resolve identifiers against catalog) `[serial]` `depends: T-042,T-050`
+- [x] **T-060** — Name resolution pass (resolve identifiers against catalog) `[serial]` `depends: T-042,T-050`
+  - Implemented in `internal/analyzer` as a catalog-backed name-resolution pass over the parser-local CST, including derived-table and query-local scopes, foreign-key reference resolution, and focused analyzer tests; validated with targeted package tests and lint.
 
-- [ ] **T-061** — Type checker pass (assign types to all expression nodes) `[serial]` `depends: T-060,T-012`
+- [x] **T-061** — Type checker pass (assign types to all expression nodes) `[serial]` `depends: T-060,T-012`
+  - Implemented a side-table-based analyzer type checker in `internal/analyzer` that assigns types to the current Phase 1 CST expression/query surface, normalizes parser type names for `CAST`/`CREATE TABLE`, enforces boolean/assignment/default contexts, and validates with focused analyzer tests plus targeted package lint/test runs.
 
 - [ ] **T-062** — Constraint validation (NOT NULL, column count in INSERT) `[parallel-safe]` `depends: T-061`
 
@@ -140,9 +148,9 @@
   - Concurrent-read, exclusive-write via RWMutex
   - Acceptance: 50+ storage unit tests
 
-- [ ] **T-072** — Sequential scan operator `[parallel-safe]` `depends: T-071`
+- [x] **T-072** — Sequential scan operator `[parallel-safe]` `depends: T-071`
 
-- [ ] **T-073** — In-memory transaction isolation (snapshot per-transaction) `[parallel-safe]` `depends: T-071`
+- [x] **T-073** — In-memory transaction isolation (snapshot per-transaction) `[parallel-safe]` `depends: T-071`
 
 ### 1H — Query Planner (Logical)
 
@@ -189,7 +197,7 @@
 
 - [ ] **T-111** — SQL-92 compliance suite skeleton (50 minimum tests) `[parallel-safe]` `depends: T-110`
 
-- [ ] **T-112** — Race-detector CI job `[parallel-safe]` `depends: T-003`
+- [x] **T-112** — Race-detector CI job `[parallel-safe]` `depends: T-003`
 
 - [ ] **T-113** — Fuzz targets: lexer, parser, expression evaluator `[parallel-safe]` `depends: T-021,T-046,T-094`
 

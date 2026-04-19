@@ -27,6 +27,10 @@ var (
 	ErrRowNotFound = errors.New("memory storage: row not found")
 	// ErrIteratorClosed reports iteration attempted after Close.
 	ErrIteratorClosed = errors.New("memory storage: iterator is closed")
+	// ErrSerializationConflict reports a SERIALIZABLE transaction that can no
+	// longer be committed because its pinned snapshot diverged from the current
+	// committed table state.
+	ErrSerializationConflict = errors.New("memory storage: serialization conflict")
 )
 
 // Store is the Phase 1 in-memory storage engine.
@@ -58,6 +62,7 @@ func (s *Store) Insert(tx storage.Transaction, table storage.TableID, row storag
 		return storage.RowHandle{}, err
 	}
 
+	memTx.observeCommittedTable(table)
 	handle := s.reserveHandle(table)
 
 	memTx.mu.Lock()
@@ -88,18 +93,16 @@ func (s *Store) Scan(tx storage.Transaction, table storage.TableID, options stor
 	}
 
 	normalized := options.Normalized()
+	committed := memTx.snapshotCommittedTable(table)
 	changes, err := memTx.snapshotTableChanges(table)
 	if err != nil {
 		return nil, err
 	}
-
-	committed := s.snapshotTable(table)
-	records, err := materializeRecords(committed, changes, normalized)
-	if err != nil {
+	if err := validateScanOptions(committed, changes, normalized.Constraints); err != nil {
 		return nil, err
 	}
 
-	return &iterator{records: records}, nil
+	return newScanIterator(committed, changes, normalized), nil
 }
 
 // Update stages a row replacement inside tx.
@@ -116,6 +119,7 @@ func (s *Store) Update(tx storage.Transaction, table storage.TableID, handle sto
 		return err
 	}
 
+	memTx.observeCommittedTable(table)
 	change, ok, err := memTx.lookupTableChange(table, handle.Slot)
 	if err != nil {
 		return err
@@ -161,6 +165,7 @@ func (s *Store) Delete(tx storage.Transaction, table storage.TableID, handle sto
 		return err
 	}
 
+	memTx.observeCommittedTable(table)
 	change, ok, err := memTx.lookupTableChange(table, handle.Slot)
 	if err != nil {
 		return err
@@ -190,6 +195,7 @@ func (s *Store) NewTransaction(options storage.TransactionOptions) (storage.Tran
 		isolation: normalized.Isolation,
 		readOnly:  normalized.ReadOnly,
 		pending:   make(map[storage.TableID]map[uint64]pendingChange),
+		snapshots: make(map[storage.TableID][]heapEntry),
 	}
 	tx.state.Store(uint32(txStateActive))
 
@@ -221,14 +227,16 @@ type transaction struct {
 
 	state atomic.Uint32
 
-	mu      sync.Mutex
-	pending map[storage.TableID]map[uint64]pendingChange
+	mu        sync.Mutex
+	pending   map[storage.TableID]map[uint64]pendingChange
+	snapshots map[storage.TableID][]heapEntry
 }
 
 type txState uint32
 
 const (
 	txStateActive txState = iota + 1
+	txStateCommitting
 	txStateCommitted
 	txStateRolledBack
 )
@@ -255,12 +263,24 @@ func (tx *transaction) ReadOnly() bool {
 }
 
 func (tx *transaction) Commit() error {
-	if !tx.state.CompareAndSwap(uint32(txStateActive), uint32(txStateCommitted)) {
+	if !tx.state.CompareAndSwap(uint32(txStateActive), uint32(txStateCommitting)) {
 		return ErrTransactionClosed
 	}
 
-	pending := tx.drainPending()
-	tx.store.applyCommittedChanges(pending)
+	snapshots := tx.snapshotCommittedTables()
+	pending := tx.snapshotPendingChanges()
+
+	if tx.isolation == storage.IsolationSerializable {
+		if err := tx.store.commitPendingChanges(snapshots, pending); err != nil {
+			tx.state.Store(uint32(txStateActive))
+			return err
+		}
+	} else {
+		tx.store.applyCommittedChanges(pending)
+	}
+
+	tx.clearPending()
+	tx.state.Store(uint32(txStateCommitted))
 
 	return nil
 }
@@ -273,6 +293,81 @@ func (tx *transaction) Rollback() error {
 	tx.drainPending()
 
 	return nil
+}
+
+func (tx *transaction) snapshotCommittedTable(table storage.TableID) []heapEntry {
+	switch tx.isolation {
+	case storage.IsolationReadUncommitted, storage.IsolationReadCommitted:
+		return tx.store.snapshotTable(table)
+	case storage.IsolationRepeatableRead, storage.IsolationSerializable:
+		tx.mu.Lock()
+		snapshot, ok := tx.snapshots[table]
+		tx.mu.Unlock()
+		if ok {
+			return snapshot
+		}
+
+		captured := tx.store.snapshotTable(table)
+
+		tx.mu.Lock()
+		defer tx.mu.Unlock()
+
+		if snapshot, ok := tx.snapshots[table]; ok {
+			return snapshot
+		}
+
+		tx.snapshots[table] = captured
+
+		return captured
+	default:
+		return tx.store.snapshotTable(table)
+	}
+}
+
+func (tx *transaction) observeCommittedTable(table storage.TableID) {
+	switch tx.isolation {
+	case storage.IsolationRepeatableRead, storage.IsolationSerializable:
+		tx.snapshotCommittedTable(table)
+	}
+}
+
+func (tx *transaction) snapshotCommittedTables() map[storage.TableID][]heapEntry {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	if len(tx.snapshots) == 0 {
+		return nil
+	}
+
+	snapshots := make(map[storage.TableID][]heapEntry, len(tx.snapshots))
+	for table, snapshot := range tx.snapshots {
+		snapshots[table] = snapshot
+	}
+
+	return snapshots
+}
+
+func (tx *transaction) snapshotPendingChanges() map[storage.TableID]map[uint64]pendingChange {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	if len(tx.pending) == 0 {
+		return nil
+	}
+
+	pending := make(map[storage.TableID]map[uint64]pendingChange, len(tx.pending))
+	for table, tableChanges := range tx.pending {
+		pending[table] = clonePendingChanges(tableChanges)
+	}
+
+	return pending
+}
+
+func (tx *transaction) clearPending() {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	tx.pending = make(map[storage.TableID]map[uint64]pendingChange)
 }
 
 func (tx *transaction) ensureActive() error {
@@ -378,15 +473,7 @@ func (tx *transaction) snapshotTableChanges(table storage.TableID) (map[uint64]p
 		return nil, nil
 	}
 
-	snapshot := make(map[uint64]pendingChange, len(tableChanges))
-	for slot, change := range tableChanges {
-		snapshot[slot] = pendingChange{
-			op:  change.op,
-			row: change.row.Clone(),
-		}
-	}
-
-	return snapshot, nil
+	return clonePendingChanges(tableChanges), nil
 }
 
 func (tx *transaction) drainPending() map[storage.TableID]map[uint64]pendingChange {
@@ -399,14 +486,7 @@ func (tx *transaction) drainPending() map[storage.TableID]map[uint64]pendingChan
 
 	drained := make(map[storage.TableID]map[uint64]pendingChange, len(tx.pending))
 	for table, tableChanges := range tx.pending {
-		cloned := make(map[uint64]pendingChange, len(tableChanges))
-		for slot, change := range tableChanges {
-			cloned[slot] = pendingChange{
-				op:  change.op,
-				row: change.row.Clone(),
-			}
-		}
-		drained[table] = cloned
+		drained[table] = clonePendingChanges(tableChanges)
 	}
 
 	tx.pending = make(map[storage.TableID]map[uint64]pendingChange)
@@ -485,15 +565,7 @@ func (s *Store) snapshotTable(table storage.TableID) []heapEntry {
 		return nil
 	}
 
-	snapshot := make([]heapEntry, len(heap.heap))
-	for index, entry := range heap.heap {
-		snapshot[index].state = entry.state
-		if entry.state == rowStateLive {
-			snapshot[index].row = entry.row.Clone()
-		}
-	}
-
-	return snapshot
+	return cloneHeapEntries(heap.heap)
 }
 
 func (s *Store) applyCommittedChanges(changes map[storage.TableID]map[uint64]pendingChange) {
@@ -504,6 +576,10 @@ func (s *Store) applyCommittedChanges(changes map[storage.TableID]map[uint64]pen
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.applyCommittedChangesLocked(changes)
+}
+
+func (s *Store) applyCommittedChangesLocked(changes map[storage.TableID]map[uint64]pendingChange) {
 	for table, tableChanges := range changes {
 		if len(tableChanges) == 0 {
 			continue
@@ -539,46 +615,140 @@ func (s *Store) applyCommittedChanges(changes map[storage.TableID]map[uint64]pen
 	}
 }
 
+func (s *Store) commitPendingChanges(snapshots map[storage.TableID][]heapEntry, changes map[storage.TableID]map[uint64]pendingChange) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.validateSerializableSnapshotsLocked(snapshots); err != nil {
+		return err
+	}
+
+	s.applyCommittedChangesLocked(changes)
+
+	return nil
+}
+
+func (s *Store) validateSerializableSnapshotsLocked(snapshots map[storage.TableID][]heapEntry) error {
+	if len(snapshots) == 0 {
+		return nil
+	}
+
+	for table, snapshot := range snapshots {
+		heap := s.tables[table]
+		if heap == nil {
+			if len(visibleHeapEntries(snapshot)) != 0 {
+				return ErrSerializationConflict
+			}
+			continue
+		}
+		if !heapEntriesEqual(visibleHeapEntries(snapshot), visibleHeapEntries(heap.heap)) {
+			return ErrSerializationConflict
+		}
+	}
+
+	return nil
+}
+
 func ensureHeapLength(heap *[]heapEntry, size int) {
 	for len(*heap) < size {
 		*heap = append(*heap, heapEntry{state: rowStateAbsent})
 	}
 }
 
-func materializeRecords(committed []heapEntry, changes map[uint64]pendingChange, options storage.ScanOptions) ([]storage.Record, error) {
-	maxSlot := len(committed)
-	for slot := range changes {
-		if int(slot) > maxSlot {
-			maxSlot = int(slot)
+func cloneHeapEntries(entries []heapEntry) []heapEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	clone := make([]heapEntry, len(entries))
+	for index, entry := range entries {
+		clone[index].state = entry.state
+		if entry.state == rowStateLive {
+			clone[index].row = entry.row.Clone()
 		}
 	}
 
-	records := make([]storage.Record, 0, maxSlot)
-	for slot := 1; slot <= maxSlot; slot++ {
-		row, ok := visibleRowAtSlot(committed, changes, uint64(slot))
-		if !ok {
+	return clone
+}
+
+func visibleHeapEntries(entries []heapEntry) []heapEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	visible := make([]heapEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.state != rowStateLive {
 			continue
 		}
 
-		match, err := matchesConstraints(row, options.Constraints)
-		if err != nil {
-			return nil, err
-		}
-		if !match {
-			continue
-		}
-
-		records = append(records, storage.Record{
-			Handle: storage.RowHandle{Page: memoryPageID, Slot: uint64(slot)},
-			Row:    row.Clone(),
+		visible = append(visible, heapEntry{
+			state: rowStateLive,
+			row:   entry.row.Clone(),
 		})
+	}
 
-		if options.Limit > 0 && len(records) >= options.Limit {
-			break
+	return visible
+}
+
+func clonePendingChanges(changes map[uint64]pendingChange) map[uint64]pendingChange {
+	if len(changes) == 0 {
+		return nil
+	}
+
+	clone := make(map[uint64]pendingChange, len(changes))
+	for slot, change := range changes {
+		clone[slot] = pendingChange{
+			op:  change.op,
+			row: change.row.Clone(),
 		}
 	}
 
-	return records, nil
+	return clone
+}
+
+func heapEntriesEqual(left, right []heapEntry) bool {
+	if len(left) != len(right) {
+		return false
+	}
+
+	for index := range left {
+		if left[index].state != right[index].state {
+			return false
+		}
+		if left[index].state != rowStateLive {
+			continue
+		}
+		if !rowsEqual(left[index].row, right[index].row) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func rowsEqual(left, right storage.Row) bool {
+	if left.Len() != right.Len() {
+		return false
+	}
+
+	for index := 0; index < left.Len(); index++ {
+		leftValue, ok := left.Value(index)
+		if !ok {
+			return false
+		}
+
+		rightValue, ok := right.Value(index)
+		if !ok {
+			return false
+		}
+
+		if !leftValue.Equal(rightValue) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func visibleRowAtSlot(committed []heapEntry, changes map[uint64]pendingChange, slot uint64) (storage.Row, bool) {
@@ -642,32 +812,98 @@ func constraintMatches(op storage.ComparisonOp, comparison int) bool {
 	}
 }
 
-type iterator struct {
-	records []storage.Record
-	index   int
-	closed  bool
+type scanIterator struct {
+	committed []heapEntry
+	changes   map[uint64]pendingChange
+	options   storage.ScanOptions
+	slot      uint64
+	maxSlot   uint64
+	emitted   int
+	closed    bool
 }
 
-func (it *iterator) Next() (storage.Record, error) {
+func newScanIterator(committed []heapEntry, changes map[uint64]pendingChange, options storage.ScanOptions) storage.RowIterator {
+	maxSlot := uint64(len(committed))
+	for slot := range changes {
+		if slot > maxSlot {
+			maxSlot = slot
+		}
+	}
+
+	return &scanIterator{
+		committed: committed,
+		changes:   changes,
+		options:   options,
+		maxSlot:   maxSlot,
+	}
+}
+
+func validateScanOptions(committed []heapEntry, changes map[uint64]pendingChange, constraints []storage.ScanConstraint) error {
+	if len(constraints) == 0 {
+		return nil
+	}
+
+	maxSlot := uint64(len(committed))
+	for slot := range changes {
+		if slot > maxSlot {
+			maxSlot = slot
+		}
+	}
+
+	for slot := uint64(1); slot <= maxSlot; slot++ {
+		row, ok := visibleRowAtSlot(committed, changes, slot)
+		if !ok {
+			continue
+		}
+
+		if _, err := matchesConstraints(row, constraints); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (it *scanIterator) Next() (storage.Record, error) {
 	if it.closed {
 		return storage.Record{}, ErrIteratorClosed
 	}
-	if it.index >= len(it.records) {
+
+	if it.options.Limit > 0 && it.emitted >= it.options.Limit {
 		return storage.Record{}, io.EOF
 	}
 
-	record := it.records[it.index]
-	it.index++
+	for it.slot < it.maxSlot {
+		it.slot++
 
-	return storage.Record{
-		Handle: record.Handle,
-		Row:    record.Row.Clone(),
-	}, nil
+		row, ok := visibleRowAtSlot(it.committed, it.changes, it.slot)
+		if !ok {
+			continue
+		}
+
+		match, err := matchesConstraints(row, it.options.Constraints)
+		if err != nil {
+			return storage.Record{}, err
+		}
+		if !match {
+			continue
+		}
+
+		it.emitted++
+
+		return storage.Record{
+			Handle: storage.RowHandle{Page: memoryPageID, Slot: it.slot},
+			Row:    row,
+		}, nil
+	}
+
+	return storage.Record{}, io.EOF
 }
 
-func (it *iterator) Close() error {
+func (it *scanIterator) Close() error {
 	it.closed = true
-	it.records = nil
+	it.committed = nil
+	it.changes = nil
 
 	return nil
 }

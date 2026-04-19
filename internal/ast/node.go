@@ -18,9 +18,28 @@ type Node interface {
 // later tasks should contribute a matching VisitXxx method here.
 type Visitor interface {
 	VisitScript(*Script) any
+	VisitSelectStmt(*SelectStmt) any
+	VisitSelectItem(*SelectItem) any
+	VisitFromSource(*FromSource) any
+	VisitOrderByItem(*OrderByItem) any
+	VisitInsertStmt(*InsertStmt) any
+	VisitInsertValuesSource(*InsertValuesSource) any
+	VisitInsertQuerySource(*InsertQuerySource) any
+	VisitInsertDefaultValuesSource(*InsertDefaultValuesSource) any
+	VisitUpdateAssignment(*UpdateAssignment) any
+	VisitUpdateStmt(*UpdateStmt) any
+	VisitDeleteStmt(*DeleteStmt) any
+	VisitTypeName(*TypeName) any
+	VisitReferenceSpec(*ReferenceSpec) any
+	VisitConstraintDef(*ConstraintDef) any
+	VisitColumnDef(*ColumnDef) any
+	VisitCreateTableStmt(*CreateTableStmt) any
+	VisitDropTableStmt(*DropTableStmt) any
 	VisitIdentifier(*Identifier) any
 	VisitQualifiedName(*QualifiedName) any
 	VisitStar(*Star) any
+	VisitBinaryExpr(*BinaryExpr) any
+	VisitUnaryExpr(*UnaryExpr) any
 	VisitIntegerLiteral(*IntegerLiteral) any
 	VisitFloatLiteral(*FloatLiteral) any
 	VisitStringLiteral(*StringLiteral) any

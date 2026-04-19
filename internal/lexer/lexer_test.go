@@ -54,6 +54,36 @@ func TestLexerSQL92Keywords(t *testing.T) {
 	}
 }
 
+func TestLexerSQL99KeywordAdditionsRemainIdentifiers(t *testing.T) {
+	keywords := token.SQL99Keywords()
+
+	for _, keyword := range keywords {
+		keyword := keyword
+		t.Run(keyword.Word, func(t *testing.T) {
+			input := staggerCase(strings.ToLower(keyword.Word))
+			tokens := lexerpkg.NewString(input).All()
+			if len(tokens) != 2 {
+				t.Fatalf("token count = %d, want 2", len(tokens))
+			}
+
+			wantEnd := endOfSingleLine(input)
+			assertToken(t, tokens[0], expectedToken{
+				kind:   token.KindIdentifier,
+				lexeme: input,
+				text:   input,
+				start:  token.Pos{Line: 1, Column: 1, Offset: 0},
+				end:    wantEnd,
+			})
+
+			if _, found := token.LookupKeyword(keyword.Word); !found {
+				t.Fatalf("LookupKeyword(%q) = not found, want combined lookup to retain SQL:1999 additions", keyword.Word)
+			}
+
+			assertEOF(t, tokens[1], wantEnd)
+		})
+	}
+}
+
 func TestLexerSingleTokenCases(t *testing.T) {
 	tests := []struct {
 		name    string

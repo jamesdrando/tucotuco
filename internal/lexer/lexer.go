@@ -95,7 +95,7 @@ func (l *Lexer) Next() token.Token {
 	if l.matchFoldedKeyword("END-EXEC") && !l.hasIdentifierContinuation(len("END-EXEC")) {
 		l.advanceBytes(len("END-EXEC"))
 
-		keyword, _ := token.LookupKeyword("END-EXEC")
+		keyword, _ := token.LookupSQL92Keyword("END-EXEC")
 
 		return l.makeToken(token.KindKeyword, start, l.lexeme(start), keyword.Word, keyword, "")
 	}
@@ -144,7 +144,7 @@ func (l *Lexer) scanIdentifierOrKeyword(start token.Pos) token.Token {
 	}
 
 	lexeme := l.lexeme(start)
-	keyword, ok := token.LookupKeyword(lexeme)
+	keyword, ok := token.LookupSQL92Keyword(lexeme)
 	if ok {
 		return l.makeToken(token.KindKeyword, start, lexeme, keyword.Word, keyword, "")
 	}
@@ -406,7 +406,7 @@ func (l *Lexer) scanUnexpected(start token.Pos, message string) token.Token {
 	return l.makeToken(token.KindError, start, l.lexeme(start), "", token.Keyword{}, message)
 }
 
-func (l *Lexer) scanDelimitedText(quote byte, name string) (string, bool) {
+func (l *Lexer) scanDelimitedText(quote byte, _ string) (string, bool) {
 	var text strings.Builder
 	if l.peekByte(0) != quote {
 		return "", false

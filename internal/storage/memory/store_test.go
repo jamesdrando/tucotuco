@@ -17,10 +17,7 @@ var testTable = storage.TableID{Schema: "public", Name: "widgets"}
 func TestStoreImplementsStorage(t *testing.T) {
 	t.Parallel()
 
-	var storeInterface storage.Storage = memory.New()
-	if storeInterface == nil {
-		t.Fatal("memory.New() returned nil")
-	}
+	var _ storage.Storage = (*memory.Store)(nil)
 }
 
 func TestNewTransactionOptions(t *testing.T) {
@@ -266,6 +263,140 @@ func TestTransactionSeesOwnWrites(t *testing.T) {
 	}
 	if records := collectRecords(t, mustScan(t, store, tx, testTable, storage.ScanOptions{})); len(records) != 0 {
 		t.Fatalf("len(records) = %d, want 0", len(records))
+	}
+}
+
+func TestScanUsesStatementSnapshot(t *testing.T) {
+	t.Parallel()
+
+	store := memory.New()
+	insertCommittedRow(t, store, storage.NewRow(types.Int32Value(1), types.StringValue("seed")))
+
+	tx := mustNewTransaction(t, store, storage.TransactionOptions{ReadOnly: true})
+	iter := mustScan(t, store, tx, testTable, storage.ScanOptions{})
+
+	insertCommittedRow(t, store, storage.NewRow(types.Int32Value(2), types.StringValue("late")))
+
+	records := collectRecords(t, iter)
+	got := recordInts(t, records)
+	want := []int32{1}
+	if len(got) != len(want) {
+		t.Fatalf("record count = %d, want %d (%v)", len(got), len(want), want)
+	}
+	for index := range got {
+		if got[index] != want[index] {
+			t.Fatalf("records = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestReadCommittedRefreshesSnapshotPerScan(t *testing.T) {
+	t.Parallel()
+
+	store := memory.New()
+	insertCommittedRow(t, store, storage.NewRow(types.Int32Value(1), types.StringValue("seed")))
+
+	tx := mustNewTransaction(t, store, storage.TransactionOptions{})
+	if _, err := store.Insert(tx, testTable, storage.NewRow(types.Int32Value(10), types.StringValue("pending"))); err != nil {
+		t.Fatalf("Insert() error = %v", err)
+	}
+
+	first := recordInts(t, collectRecords(t, mustScan(t, store, tx, testTable, storage.ScanOptions{})))
+	if len(first) != 2 || first[0] != 1 || first[1] != 10 {
+		t.Fatalf("first scan = %v, want [1 10]", first)
+	}
+
+	insertCommittedRow(t, store, storage.NewRow(types.Int32Value(2), types.StringValue("late")))
+
+	second := recordInts(t, collectRecords(t, mustScan(t, store, tx, testTable, storage.ScanOptions{})))
+	want := []int32{1, 10, 2}
+	if len(second) != len(want) {
+		t.Fatalf("second scan length = %d, want %d (%v)", len(second), len(want), want)
+	}
+	for index := range second {
+		if second[index] != want[index] {
+			t.Fatalf("second scan = %v, want %v", second, want)
+		}
+	}
+}
+
+func TestRepeatableReadKeepsPinnedSnapshot(t *testing.T) {
+	t.Parallel()
+
+	store := memory.New()
+	insertCommittedRow(t, store, storage.NewRow(types.Int32Value(1), types.StringValue("seed")))
+
+	tx := mustNewTransaction(t, store, storage.TransactionOptions{Isolation: storage.IsolationRepeatableRead})
+	if _, err := store.Insert(tx, testTable, storage.NewRow(types.Int32Value(10), types.StringValue("pending"))); err != nil {
+		t.Fatalf("Insert() error = %v", err)
+	}
+
+	first := recordInts(t, collectRecords(t, mustScan(t, store, tx, testTable, storage.ScanOptions{})))
+	if len(first) != 2 || first[0] != 1 || first[1] != 10 {
+		t.Fatalf("first scan = %v, want [1 10]", first)
+	}
+
+	insertCommittedRow(t, store, storage.NewRow(types.Int32Value(2), types.StringValue("late")))
+
+	second := recordInts(t, collectRecords(t, mustScan(t, store, tx, testTable, storage.ScanOptions{})))
+	want := []int32{1, 10}
+	if len(second) != len(want) {
+		t.Fatalf("second scan length = %d, want %d (%v)", len(second), len(want), want)
+	}
+	for index := range second {
+		if second[index] != want[index] {
+			t.Fatalf("second scan = %v, want %v", second, want)
+		}
+	}
+}
+
+func TestSerializableConflictOnConcurrentChange(t *testing.T) {
+	t.Parallel()
+
+	store := memory.New()
+	insertCommittedRow(t, store, storage.NewRow(types.Int32Value(1), types.StringValue("seed")))
+
+	tx := mustNewTransaction(t, store, storage.TransactionOptions{Isolation: storage.IsolationSerializable})
+	if _, err := store.Insert(tx, testTable, storage.NewRow(types.Int32Value(10), types.StringValue("pending"))); err != nil {
+		t.Fatalf("Insert() error = %v", err)
+	}
+
+	insertCommittedRow(t, store, storage.NewRow(types.Int32Value(2), types.StringValue("late")))
+
+	if err := tx.Commit(); !errors.Is(err, memory.ErrSerializationConflict) {
+		t.Fatalf("Commit() error = %v, want %v", err, memory.ErrSerializationConflict)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback() after conflict error = %v", err)
+	}
+}
+
+func TestSerializableCommitIgnoresTombstoneOnlyChanges(t *testing.T) {
+	t.Parallel()
+
+	store := memory.New()
+	tx := mustNewTransaction(t, store, storage.TransactionOptions{Isolation: storage.IsolationSerializable, ReadOnly: true})
+
+	iter := mustScan(t, store, tx, testTable, storage.ScanOptions{})
+	defer closeIterator(t, iter)
+	if _, err := iter.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("Next() error = %v, want io.EOF", err)
+	}
+
+	writeTx := mustNewTransaction(t, store, storage.TransactionOptions{})
+	handle, err := store.Insert(writeTx, testTable, storage.NewRow(types.Int32Value(1), types.StringValue("transient")))
+	if err != nil {
+		t.Fatalf("Insert() error = %v", err)
+	}
+	if err := store.Delete(writeTx, testTable, handle); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if err := writeTx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
 	}
 }
 
