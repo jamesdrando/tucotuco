@@ -14,7 +14,7 @@ func TestTypeCheckerAssignsSelectOutputsAndOrderByAlias(t *testing.T) {
 	t.Parallel()
 
 	cat := mixedTypeCatalog(t)
-	script := parseScript(t, "SELECT customer_id AS cid, COALESCE(total, 0) AS total_or_zero, COUNT(DISTINCT total) FROM orders WHERE customer_id = 1 ORDER BY cid")
+	script := parseScript(t, "SELECT customer_id AS cid, COALESCE(MAX(total), 0) AS total_or_zero, COUNT(DISTINCT total) FROM orders WHERE customer_id = 1 GROUP BY customer_id ORDER BY cid")
 
 	typed, diags := typeCheckSQL(t, cat, script)
 	if len(diags) != 0 {
@@ -80,7 +80,7 @@ func TestTypeCheckerContextualizesNullAssignments(t *testing.T) {
 	t.Parallel()
 
 	cat := mixedTypeCatalog(t)
-	script := parseScript(t, "INSERT INTO orders (total) VALUES (NULL)")
+	script := parseScript(t, "INSERT INTO orders (id, total) VALUES (1, NULL)")
 
 	typed, diags := typeCheckSQL(t, cat, script)
 	if len(diags) != 0 {
@@ -88,7 +88,7 @@ func TestTypeCheckerContextualizesNullAssignments(t *testing.T) {
 	}
 
 	stmt := script.Nodes[0].(*parser.InsertStmt)
-	value := stmt.Source.(*parser.InsertValuesSource).Rows[0][0]
+	value := stmt.Source.(*parser.InsertValuesSource).Rows[0][1]
 	if got, ok := typed.Expr(value); !ok || got != mustAnalyzerTypeDesc(t, "INTEGER") {
 		t.Fatalf("Expr(insert NULL) = (%#v, %t), want INTEGER", got, ok)
 	}

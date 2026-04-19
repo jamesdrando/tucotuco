@@ -29,6 +29,7 @@ func (c *TypeChecker) CheckScript(script *parser.Script) (*Types, []diag.Diagnos
 		columnTypes: make(map[*parser.ColumnDef]sqtypes.TypeDesc),
 	}
 	pass.checkScript(script)
+	pass.validateAggregatePlacement(script)
 
 	return pass.types, pass.diagnostics
 }
@@ -174,6 +175,7 @@ func (p *typeCheckPass) checkInsert(stmt *parser.InsertStmt) {
 	}
 
 	targets := p.insertTargetColumns(stmt)
+	p.checkInsertMissingColumns(stmt)
 
 	switch source := stmt.Source.(type) {
 	case *parser.InsertValuesSource:
@@ -182,6 +184,7 @@ func (p *typeCheckPass) checkInsert(stmt *parser.InsertStmt) {
 			for _, value := range row {
 				rowTypes = append(rowTypes, p.exprType(value))
 			}
+			p.checkInsertValuesShape(source.Pos(), len(targets), len(row))
 			p.checkAssignmentList(targets, row, rowTypes, "INSERT value")
 		}
 	case *parser.InsertQuerySource:
@@ -190,7 +193,10 @@ func (p *typeCheckPass) checkInsert(stmt *parser.InsertStmt) {
 			return
 		}
 		outputs := p.checkSelect(query)
+		p.checkInsertQueryShape(source.Pos(), len(targets), len(outputs))
 		p.checkAssignmentList(targets, selectOutputNodes(p.bindings(), query), outputs, "INSERT value")
+	case *parser.InsertDefaultValuesSource:
+		p.checkInsertDefaultValues(stmt)
 	}
 }
 
@@ -230,6 +236,7 @@ func (p *typeCheckPass) checkUpdate(stmt *parser.UpdateStmt) {
 			})
 		}
 
+		p.checkUpdateAssignmentShape(assignment.Pos(), len(targets), len(values))
 		p.checkAssignmentList(targets, assignment.Values, values, "UPDATE value")
 	}
 
@@ -265,6 +272,7 @@ func (p *typeCheckPass) checkCreateTable(stmt *parser.CreateTableStmt) {
 			defaultType := p.exprType(column.Default)
 			if ok {
 				p.requireAssignable(column.Default, defaultType, columnType, fmt.Sprintf("DEFAULT for column %q", safeIdentifierName(column.Name)))
+				p.requireNonNullDefault(column.Default, defaultType, columnType, safeIdentifierName(column.Name))
 			}
 		}
 
@@ -929,14 +937,6 @@ func (p *typeCheckPass) requireAssignable(node parser.Node, from sqtypes.TypeDes
 	}
 
 	p.addError(sqlStateDatatypeMismatch, node.Pos(), "%s must be coercible to %s, found %s", context, typeString(to), typeString(from))
-}
-
-func (p *typeCheckPass) checkAssignmentList(targets []assignmentTarget, exprs []parser.Node, values []sqtypes.TypeDesc, context string) {
-	limit := minInt(len(targets), minInt(len(exprs), len(values)))
-	for index := 0; index < limit; index++ {
-		target := targets[index]
-		p.requireAssignable(exprs[index], values[index], target.typ, fmt.Sprintf("%s for column %q", context, target.name))
-	}
 }
 
 func (p *typeCheckPass) insertTargetColumns(stmt *parser.InsertStmt) []assignmentTarget {

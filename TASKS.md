@@ -135,9 +135,11 @@
 - [x] **T-061** — Type checker pass (assign types to all expression nodes) `[serial]` `depends: T-060,T-012`
   - Implemented a side-table-based analyzer type checker in `internal/analyzer` that assigns types to the current Phase 1 CST expression/query surface, normalizes parser type names for `CAST`/`CREATE TABLE`, enforces boolean/assignment/default contexts, and validates with focused analyzer tests plus targeted package lint/test runs.
 
-- [ ] **T-062** — Constraint validation (NOT NULL, column count in INSERT) `[parallel-safe]` `depends: T-061`
+- [x] **T-062** — Constraint validation (NOT NULL, column count in INSERT) `[parallel-safe]` `depends: T-061`
+  - Added analyzer-side write validation for `INSERT`/`UPDATE` shape, omitted required columns, `DEFAULT VALUES`, explicit `NULL` writes to `NOT NULL` targets, and `NOT NULL DEFAULT NULL` in `CREATE TABLE`; validated with focused analyzer package tests.
 
-- [ ] **T-063** — Aggregate / window function placement validator `[parallel-safe]` `depends: T-061`
+- [x] **T-063** — Aggregate / window function placement validator `[parallel-safe]` `depends: T-061`
+  - Added aggregate placement and grouped-query validation over the current Phase 1 CST surface in `internal/analyzer`, including disallowed-clause diagnostics, nested aggregate rejection, derived-table recursion, and focused analyzer package tests; current parser surface still has no `OVER` syntax to validate.
 
 ### 1G — Storage Engine
 

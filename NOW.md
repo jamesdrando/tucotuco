@@ -18,33 +18,35 @@
 
 ## JUST DONE
 
-Completed `TASKS.md` T-061 using `SPEC.md` §3, §5, §7, and §8.
+Completed `TASKS.md` T-062 and T-063 using `SPEC.md` §7, §8, and §11, building on the current analyzer resolver/type-checker state.
 
-- Added a side-table-based analyzer type checker in `internal/analyzer/types.go` and `internal/analyzer/typecheck.go` that assigns types to the current Phase 1 parser-local CST surface, reuses resolver bindings for catalog/derived/local column references, normalizes parser type names for `CAST` and `CREATE TABLE`, and applies boolean/assignment/default context checks without mutating CST nodes.
-- Added `internal/analyzer/typecheck_test.go` with focused coverage for select outputs, alias/derived-table propagation, `COUNT`/`COALESCE`/`CASE`/`CAST`, contextual `NULL` typing, `CREATE TABLE` defaults, and representative `42804`/`42883` diagnostics.
+- Extended `internal/analyzer/typecheck.go` to invoke a dedicated post-typecheck aggregate-placement pass and to enforce remaining write-time checks for `CREATE TABLE` defaults.
+- Added `internal/analyzer/writecheck.go` and `internal/analyzer/writecheck_test.go` to validate `INSERT` row/query column counts, `UPDATE` tuple assignment shape, omitted required columns, `DEFAULT VALUES`, explicit `NULL` writes to `NOT NULL` targets, and `NOT NULL DEFAULT NULL`.
+- Added `internal/analyzer/aggregate_validation.go` and `internal/analyzer/aggregate_validation_test.go` to validate aggregate placement across the current Phase 1 CST surface, reject nested aggregates, recurse through derived tables/subqueries, and enforce grouped-query column usage without mutating parser nodes or resolver/type side tables.
+- Updated the existing analyzer tests that exercised aggregate typing so they still cover type assignment on semantically valid grouped queries under the new placement rules.
 - Verified `env GOCACHE=/tmp/tucotuco-go-build go test ./internal/analyzer`.
-- Verified `env GOLANGCI_LINT_CACHE=/tmp/golangci-lint-cache GOCACHE=/tmp/tucotuco-go-build ./.bin/golangci-lint run ./internal/analyzer`.
-- Marked `TASKS.md` T-061 complete after validation passed.
+- Attempted targeted lint, but no `golangci-lint` binary was available in the workspace (`./.bin/golangci-lint` missing and none on `PATH`).
+- Marked `TASKS.md` T-062 and T-063 complete after targeted package tests passed.
 
 ---
 
 ## NEXT
 
-**Task(s) to execute:** T-062, T-063
+**Task(s) to execute:** T-080
 
 **Instructions for the incoming agent:**
 
 1. Read `AGENTS.md` and `INDEX.md` again before starting Phase 1 work.
-2. Read the semantic-analysis context for **T-062** and **T-063**, and build directly on the current `internal/analyzer` resolver/type-checker state rather than reworking name or type assignment.
-3. Keep the work confined to `internal/analyzer/`; `T-062` should validate column-count / assignment-shape / `NOT NULL` constraints, while `T-063` should validate aggregate and window placement over the already typed CST.
-4. Reuse the analyzer side tables for bindings and types instead of writing semantic data back into parser nodes.
-5. Add focused analyzer tests for successful validation and representative diagnostics for both tasks.
-6. Run targeted validation for `internal/analyzer`, then mark `TASKS.md` `T-062` and/or `T-063` complete as each task goes green.
+2. Start **T-080** in `internal/planner/`, using the now-validated analyzer output as the semantic boundary rather than adding more parser/analyzer features first.
+3. Keep the first planner slice narrow: define the logical plan node interface plus the basic `Scan`, `Filter`, `Project`, and `Limit` nodes required by `TASKS.md`.
+4. Read the planner-related `INDEX.md` interface map before coding and keep the new planner types aligned with the existing package layout and naming style.
+5. Add focused planner tests for node construction / formatting contracts as the first acceptance layer before attempting plan-builder work in `T-081`.
+6. Run targeted validation for the planner package; if lint is required, first restore or install a `golangci-lint` binary because none was available during the analyzer closeout.
 7. Update `TASKS.md`, `NOW.md`, and `SPEC.md` if later design decisions diverge from the current spec text.
 
-**Spec references:** `SPEC.md` §3, §5, §7, §8
+**Spec references:** `SPEC.md` §7, §8
 
-**Estimated parallelism available:** 2 streams (`T-062`, `T-063`)
+**Estimated parallelism available:** 1 stream (`T-080`)
 
 ---
 
@@ -59,7 +61,7 @@ _None._
 | Milestone | Status | Tasks remaining |
 |-----------|--------|----------------|
 | M0 — Repo Ready | ✅ Complete | None |
-| M1 — SQL-92 Core | 🟨 In progress | T-037 to T-113 (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-070`, `T-071`, `T-072`, `T-073`, `T-112` complete) |
+| M1 — SQL-92 Core | 🟨 In progress | T-037 to T-113 (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-060`, `T-061`, `T-062`, `T-063`, `T-070`, `T-071`, `T-072`, `T-073`, `T-112` complete) |
 | M2 — SQL-92 Full + Storage | 🔲 Not started | T-120 to T-171 |
 | M3 — SQL:1999 | 🔲 Not started | T-200 to T-261 |
 | M4 — SQL:2003 + Wire | 🔲 Not started | T-300 to T-312 |
@@ -86,3 +88,4 @@ _None._
 | #009 | 2026-04-18 | Codex | Completed T-046; started T-060 | Extended script parsing to ignore empty semicolon-only segments, validated the parser package, and moved the baton to analyzer name resolution |
 | #010 | 2026-04-18 | Codex | Completed T-060 | Added and validated the first analyzer resolver over the parser-local CST, then advanced the baton to `T-061` |
 | #011 | 2026-04-18 | Codex | Completed T-061 | Added the first analyzer type-check pass with CST type-name normalization, focused semantic diagnostics/tests, and targeted analyzer test/lint validation, then advanced the baton to `T-062` and `T-063` |
+| #012 | 2026-04-18 | Codex | Completed T-062 and T-063 | Added analyzer-side write validation plus aggregate/grouped-query placement checks, validated `internal/analyzer` with focused package tests, and moved the baton to planner task `T-080` |
