@@ -160,13 +160,13 @@
 
 - [x] **T-081** — Plan builder: translate analyzed AST → logical plan `[serial]` `depends: T-080`
 
-- [ ] **T-082** — Logical plan printer (EXPLAIN output) `[parallel-safe]` `depends: T-081`
+- [x] **T-082** — Logical plan printer (EXPLAIN output) `[parallel-safe]` `depends: T-081`
 
 ### 1I — Executor (Volcano Model)
 
-- [ ] **T-090** — `Operator` interface: `Open()`, `Next() (Row, error)`, `Close()` `[serial]` `depends: T-080`
+- [x] **T-090** — `Operator` interface: `Open()`, `Next() (Row, error)`, `Close()` `[serial]` `depends: T-080`
 
-- [ ] **T-091** — SeqScan operator `[parallel-safe]` `depends: T-090,T-072`
+- [x] **T-091** — SeqScan operator `[parallel-safe]` `depends: T-090,T-072`
 
 - [ ] **T-092** — Filter operator `[parallel-safe]` `depends: T-090`
 

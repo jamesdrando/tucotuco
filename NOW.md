@@ -18,39 +18,37 @@
 
 ## JUST DONE
 
-Completed `TASKS.md` T-080 and T-081 using `SPEC.md` §7 and §8, establishing the first logical planner contracts plus the initial analyzed-`SELECT` builder slice.
+Completed `TASKS.md` T-091 using `SPEC.md` §8, adding the first concrete physical scan operator on top of the new executor contract and the existing storage scan path.
 
-- Added `internal/planner/plan.go` with the `Plan` interface, `Kind` enum, output `Column` metadata, `Projection`, and the basic logical nodes `Scan`, `Filter`, `Project`, and `Limit`.
-- Added `internal/planner/builder.go` with a `Builder` that translates analyzed `SELECT` statements into logical plans over `Scan`, `Filter`, and `Project`, recurses through derived-table subqueries, and emits planner diagnostics for unsupported Phase 1 query features such as `ORDER BY`, `GROUP BY`, `DISTINCT`, joins, and aggregate queries.
-- Kept planner output metadata sourced from analyzer `Bindings` and `Types`, including star expansion through analyzer side tables instead of re-resolving names or types inside the planner.
-- Added `internal/planner/plan_test.go` and `internal/planner/builder_test.go` covering node construction, output-schema propagation, defensive slice behavior, star expansion, derived-table planning, and unsupported query diagnostics.
-- Restored a repo-local `golangci-lint` binary at `./.bin/golangci-lint` after the prior session's missing-tool blocker.
-- Verified `gofmt -w internal/planner/*.go`.
-- Verified `env GOCACHE=/tmp/tucotuco-go-build go test ./internal/planner`.
+- Added `internal/executor/seqscan.go` with the `SeqScan` operator over `storage.Storage`, `storage.Transaction`, and `storage.RowIterator`, reusing executor lifecycle semantics and bridging rows through `NewRowFromStorage`.
+- Added `internal/executor/seqscan_test.go` covering lifecycle misuse, repeated `io.EOF`, handle-preserving row conversion, scan-option forwarding, and failed `Open()` behavior leaving the operator not-open while keeping `Close()` safe.
+- Confirmed through review that `T-092` and `T-093` should not yet evaluate raw planner/parser expressions directly; the current executor shape needs the compiled expression contract from `T-094` first to avoid duplicating or inventing the wrong runtime binding model.
+- Verified `gofmt -w internal/executor/seqscan.go internal/executor/seqscan_test.go`.
+- Verified `env GOCACHE=/tmp/tucotuco-go-build go test ./internal/executor ./internal/storage ./internal/storage/memory`.
 - Verified `env GOCACHE=/tmp/tucotuco-go-build go test ./...`.
-- Verified `env GOCACHE=/tmp/tucotuco-go-build GOLANGCI_LINT_CACHE=/tmp/tucotuco-golangci-lint-cache ./.bin/golangci-lint run ./internal/planner`.
-- Observed that `env GOCACHE=/tmp/tucotuco-go-build GOLANGCI_LINT_CACHE=/tmp/tucotuco-golangci-lint-cache ./.bin/golangci-lint run ./...` currently reports `no go files to analyze`; targeted package lint succeeded, but future sessions should prefer explicit package paths until the repo-wide invocation is understood.
-- Marked `TASKS.md` T-080 and T-081 complete after planner tests and targeted lint passed.
+- Verified `env GOCACHE=/tmp/tucotuco-go-build go build ./...`.
+- Confirmed again that `./.bin/` is absent and `golangci-lint` is not on `PATH` in this checkout, so lint validation remains blocked on restoring the repo-local binary or providing another linter entrypoint.
+- Marked `TASKS.md` T-091 complete after tests and build passed.
 
 ---
 
 ## NEXT
 
-**Task(s) to execute:** T-082
+**Task(s) to execute:** T-094
 
 **Instructions for the incoming agent:**
 
 1. Read `AGENTS.md` and `INDEX.md` again before starting Phase 1 work.
-2. Start **T-082** in `internal/planner/`, reusing `Plan.String()` for node summaries rather than inventing a second label format for EXPLAIN output.
-3. Keep the printer aligned with the current tree shape from `builder.go`: preorder or indented tree output over `Project`, `Filter`, `Scan`, and later `Limit` nodes, with stable formatting suitable for golden tests.
-4. Add focused planner tests that build analyzed `SELECT` plans through the real builder and then assert EXPLAIN output strings, especially for derived-table nesting and unsupported-feature diagnostics not leaking into printer code.
-5. Continue using analyzer `Bindings` and `Types` only through the built plan; the printer should not re-open analyzer semantics once a plan exists.
-6. Use the restored repo-local linter with writable caches for validation: `env GOCACHE=/tmp/tucotuco-go-build GOLANGCI_LINT_CACHE=/tmp/tucotuco-golangci-lint-cache ./.bin/golangci-lint run <pkg>`.
-7. `T-090` is now also unblocked, but `T-082` remains the first unblocked task in `TASKS.md`; update `NOW.md` accordingly if you choose to branch into executor work on a second stream.
+2. Start **T-094** in `internal/executor/`, defining the execution-time expression evaluator contract that can consume planner/parser expressions against executor rows without reintroducing analyzer/planner coupling at runtime.
+3. Treat `T-092` and `T-093` as effectively downstream of that evaluator contract even though `TASKS.md` does not currently encode the dependency; direct raw-`parser.Node` evaluation inside `Filter` or `Project` would duplicate or pre-empt `T-094`.
+4. Keep the evaluator aligned with the current executor row model from `internal/executor/executor.go` and the new `SeqScan` output shape from `internal/executor/seqscan.go`; later `Filter` and `Project` operators should consume compiled callbacks or equivalent executor-native evaluation primitives, not planner-side helpers.
+5. Add focused tests for scalar evaluation over executor rows, beginning with the current Phase 1 surface used by planner output: identifiers bound by ordinal position, literals, unary/binary operators, boolean predicates, and `CAST`/`TRY_CAST` reuse from the existing type runtime.
+6. Continue treating planner diagnostics and EXPLAIN rendering as separate concerns; executor work should consume already-analyzed plans and row values, not planner errors.
+7. Validation should continue using writable Go caches. Lint is currently blocked in this checkout because `./.bin/golangci-lint` is missing, so either restore the repo-local binary first or record the blocker explicitly if lint is still unavailable.
 
 **Spec references:** `SPEC.md` §7, §8
 
-**Estimated parallelism available:** 2 streams (`T-082`, `T-090`)
+**Estimated parallelism available:** 3 streams (`T-094`, design prep for `T-092`, design prep for `T-093`; coordinate carefully inside `internal/executor/`)
 
 ---
 
@@ -65,7 +63,7 @@ _None._
 | Milestone | Status | Tasks remaining |
 |-----------|--------|----------------|
 | M0 — Repo Ready | ✅ Complete | None |
-| M1 — SQL-92 Core | 🟨 In progress | T-037 to T-113 (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-060`, `T-061`, `T-062`, `T-063`, `T-070`, `T-071`, `T-072`, `T-073`, `T-080`, `T-081`, `T-112` complete) |
+| M1 — SQL-92 Core | 🟨 In progress | T-037 to T-113 (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-060`, `T-061`, `T-062`, `T-063`, `T-070`, `T-071`, `T-072`, `T-073`, `T-080`, `T-081`, `T-082`, `T-090`, `T-091`, `T-112` complete) |
 | M2 — SQL-92 Full + Storage | 🔲 Not started | T-120 to T-171 |
 | M3 — SQL:1999 | 🔲 Not started | T-200 to T-261 |
 | M4 — SQL:2003 + Wire | 🔲 Not started | T-300 to T-312 |
@@ -94,3 +92,5 @@ _None._
 | #011 | 2026-04-18 | Codex | Completed T-061 | Added the first analyzer type-check pass with CST type-name normalization, focused semantic diagnostics/tests, and targeted analyzer test/lint validation, then advanced the baton to `T-062` and `T-063` |
 | #012 | 2026-04-18 | Codex | Completed T-062 and T-063 | Added analyzer-side write validation plus aggregate/grouped-query placement checks, validated `internal/analyzer` with focused package tests, and moved the baton to planner task `T-080` |
 | #013 | 2026-04-19 | Codex | Completed T-080 and T-081 | Added the first logical planner node contracts plus the initial analyzed-SELECT builder, restored the repo-local linter binary, validated planner lint/tests, and advanced the baton to `T-082` |
+| #014 | 2026-04-19 | Codex | Completed T-082 and T-090 | Added the logical EXPLAIN-style plan printer plus the initial executor operator contract, validated planner/executor and repo-wide tests/build, and advanced the baton to `T-091` with lint still blocked by the missing `golangci-lint` binary |
+| #015 | 2026-04-19 | Codex | Completed T-091 | Added the first executor-side sequential scan operator with focused lifecycle/row/option tests, validated executor/storage and repo-wide tests/build, and advanced the baton to `T-094` because `T-092`/`T-093` need the expression-evaluator contract first |
