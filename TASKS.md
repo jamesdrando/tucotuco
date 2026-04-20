@@ -175,15 +175,15 @@
 - [x] **T-094** — Expression evaluator (`eval(expr, row) Value`) `[serial]` `depends: T-090,T-013`
   - Covers all SPEC §8.6 scalar functions for SQL-92 subset
 
-- [ ] **T-095** — Sort operator `[parallel-safe]` `depends: T-090,T-094`
+- [x] **T-095** — Sort operator `[parallel-safe]` `depends: T-090,T-094`
 
 - [x] **T-096** — Limit/Offset operator `[parallel-safe]` `depends: T-090`
 
-- [ ] **T-097** — HashAggregate operator (GROUP BY + aggregate functions) `[serial]` `depends: T-094`
+- [x] **T-097** — HashAggregate operator (GROUP BY + aggregate functions) `[serial]` `depends: T-094`
 
-- [ ] **T-098** — INSERT / UPDATE / DELETE executors `[parallel-safe]` `depends: T-094,T-071`
+- [x] **T-098** — INSERT / UPDATE / DELETE executors `[parallel-safe]` `depends: T-094,T-071`
 
-- [ ] **T-099** — DDL executor: CREATE TABLE, DROP TABLE `[parallel-safe]` `depends: T-051,T-071`
+- [x] **T-099** — DDL executor: CREATE TABLE, DROP TABLE `[parallel-safe]` `depends: T-051,T-071`
 
 ### 1J — Public API
 
@@ -201,7 +201,7 @@
 
 - [x] **T-112** — Race-detector CI job `[parallel-safe]` `depends: T-003`
 
-- [ ] **T-113** — Fuzz targets: lexer, parser, expression evaluator `[parallel-safe]` `depends: T-021,T-046,T-094`
+- [x] **T-113** — Fuzz targets: lexer, parser, expression evaluator `[parallel-safe]` `depends: T-021,T-046,T-094`
 
 ---
 **MILESTONE M1: SQL-92 Core** — All Phase 1 tasks complete. `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE/DROP TABLE` work end-to-end in-memory. `database/sql` driver passes standard tests.

@@ -25,3 +25,23 @@ func FuzzParseExpr(f *testing.F) {
 		_ = p.Errors()
 	})
 }
+
+func FuzzParseScript(f *testing.F) {
+	for _, seed := range []string{
+		"",
+		";",
+		"SELECT 1;",
+		"SELECT 1; SELECT 2;",
+		"CREATE TABLE widgets (id INTEGER); INSERT INTO widgets VALUES (1);",
+		"BEGIN; UPDATE widgets SET id = 2 WHERE id = 1; COMMIT;",
+		"SELECT customer_id, COUNT(*) FROM orders GROUP BY customer_id;",
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(_ *testing.T, input string) {
+		p := New(lexer.NewString(input).All())
+		_ = p.ParseScript()
+		_ = p.Errors()
+	})
+}

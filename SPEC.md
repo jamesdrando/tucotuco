@@ -385,6 +385,14 @@ _No open questions._
 
 ## SPEC_CHANGE_NOTES
 
+SPEC_CHANGE [T-097] 2026-04-20
+- Phase 1 `HashAggregate` follows PostgreSQL aggregate conventions.
+- `COUNT(*)` and `COUNT(expr)` return `0` when there are no qualifying inputs.
+- `SUM`, `AVG`, `MIN`, `MAX`, and `EVERY` return `NULL` when there are no qualifying non-`NULL` inputs, both for empty global aggregates and for groups whose aggregate argument is entirely `NULL`.
+- `EVERY` ignores `NULL` inputs and otherwise behaves like PostgreSQL `bool_and`.
+- Exact-numeric `AVG` is computed as an exact rational and then converted to `NUMERIC` with 16 fractional digits before Phase 1 decimal normalization.
+- Rationale: this keeps Phase 1 aggregate semantics aligned with PostgreSQL where practical without introducing a full PostgreSQL-compatible NUMERIC scale engine yet.
+
 SPEC_CHANGE [T-010] 2026-04-18
 - `DECIMAL` is represented by the in-repo `internal/types.Decimal` type backed by `math/big`, not by `*apd.Decimal`.
 - Rationale: Phase 1 now requires a first-party arbitrary-precision decimal implementation with no external dependency fetch, while preserving exact-decimal comparison semantics and leaving room for later coercion/cast work.
