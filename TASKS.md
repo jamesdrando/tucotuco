@@ -187,7 +187,7 @@
 
 ### 1J — Public API
 
-- [ ] **T-100** — `pkg/embed` API: `Open(path) (*DB, error)`, `DB.Exec`, `DB.Query`, `DB.Begin` `[serial]` `depends: T-098,T-099,T-082`
+- [x] **T-100** — `pkg/embed` API: `Open(path) (*DB, error)`, `DB.Exec`, `DB.Query`, `DB.Begin` `[serial]` `depends: T-098,T-099,T-082`
 
 - [ ] **T-101** — `pkg/driver`: `database/sql` driver registration `[serial]` `depends: T-100`
 

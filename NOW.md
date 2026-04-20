@@ -18,39 +18,41 @@
 
 ## JUST DONE
 
-Completed `TASKS.md` T-097 and T-113 using `SPEC.md` §8 plus the existing lexer/parser/executor contracts, resolving aggregate semantics toward PostgreSQL behavior and closing the remaining Phase 1 fuzz-target gap.
+Completed `TASKS.md` T-100 using `SPEC.md` §6, §7, §8, and §9, wiring the current Phase 1 engine into the first embeddable Go API and carrying it through focused end-to-end validation.
 
-- Added `internal/executor/hash_aggregate.go` and `internal/executor/hash_aggregate_test.go`, implementing an executor-native blocking `HashAggregate` operator with explicit local group-key and aggregate specs, first-`Next()` materialization, stable repeated `io.EOF`, retryable child-open failures, and synthetic output rows with zero storage handles.
-- Implemented grouped and global `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, and `EVERY` over compiled expression callbacks, with PostgreSQL-style empty-input and all-`NULL` behavior: `COUNT` returns `0`, the others return `NULL`, and `EVERY` ignores `NULL` inputs and otherwise follows PostgreSQL `bool_and` semantics.
-- Exact-numeric `AVG` now computes an exact rational and converts it to `NUMERIC` with 16 fractional digits before the repo's Decimal normalization step; approximate `AVG` returns `DOUBLE PRECISION`.
-- Resolved `SPEC_QUESTION [T-097]` by replacing it with `SPEC_CHANGE [T-097]` in `SPEC.md`, explicitly recording the PostgreSQL-first aggregate semantics and the Phase 1 exact-numeric `AVG` rule.
-- Added `internal/executor/fuzz_test.go`, introducing a dedicated executor expression compile/evaluate fuzz target over the current literal-heavy Phase 1 evaluator surface.
-- Extended `internal/parser/fuzz_test.go` with `FuzzParseScript`, covering multi-statement script parsing on top of the existing expression fuzz target.
-- Focused executor coverage now also includes grouped/global aggregate behavior, empty-input semantics, all-`NULL` group semantics, approximate vs exact `AVG`, signed-zero group-key normalization, repeated `io.EOF`, materialization-time expression failures, child close propagation, and retryable open failures for `HashAggregate`.
-- Verified `env GOCACHE=/tmp/tucotuco-go-test-executor go test ./internal/executor`.
-- Verified `env GOCACHE=/tmp/tucotuco-go-test-fuzz go test ./internal/lexer ./internal/parser ./internal/executor`.
-- Verified `env GOCACHE=/tmp/tucotuco-go-test-all go test ./...`.
-- Verified `env GOCACHE=/tmp/tucotuco-go-build-all go build ./...`.
-- Confirmed again that `./.bin/` is absent and `golangci-lint` is not on `PATH` in this checkout, so lint validation remains blocked on restoring the repo-local binary or providing another linter entrypoint.
-- Marked `TASKS.md` T-097 and T-113 complete after tests and build passed.
+- Added the public `pkg/embed` surface with `Open(path)`, `DB.Exec`, `DB.Query`, `DB.Begin`, mirrored `Tx` methods, eager `ResultSet`/`CommandResult` types, and public `SQLError` diagnostics that do not leak internal packages.
+- `Open(path)` now loads or creates the Phase 1 catalog metadata file, bootstraps the implicit `public` schema, and uses the in-memory row store as the backing storage engine.
+- Added the first embed-side SQL execution bridge from lexer/parser/analyzer/planner into executor operators for the current SELECT subset, including `SELECT` without `FROM` via a local singleton-row operator and plan lowering for scan/filter/project.
+- Added direct embed-side execution for `INSERT`, `UPDATE`, `DELETE`, `CREATE TABLE`, and `DROP TABLE`, plus autocommit transaction handling around `DB.Exec` and read-only autocommit around `DB.Query`.
+- Explicit `Tx` support now covers query and DML work with commit/rollback, while SQL `BEGIN` / `COMMIT` / `ROLLBACK` are rejected from `Exec` in favor of the Go transaction API.
+- Insert execution now rejects omitted-column cases that would require runtime `DEFAULT`, generated-column, or identity synthesis instead of guessing a value; `INSERT DEFAULT VALUES` is still reported as unsupported at execution time.
+- Added `internal/storage/memory/ddl.go` so autocommit `CREATE TABLE` resets stale heaps and `DROP TABLE` removes heap state, preventing dropped tables from leaking rows into later recreations.
+- Added `pkg/embed/embed_test.go` and updated `docs/api.md`, covering catalog bootstrap/reopen behavior, `SELECT 1`, end-to-end `CREATE`/`INSERT`/`SELECT`/`UPDATE`/`DELETE`/`DROP`, transaction commit/rollback, DB-call blocking during explicit transactions, and the intentional feature-not-supported cases.
+- Verified `env GOCACHE=/tmp/tucotuco-go-test-embed go test ./pkg/embed`.
+- Verified `env GOCACHE=/tmp/tucotuco-go-test-t100 go test ./pkg/embed ./internal/storage/... ./internal/catalog`.
+- Verified `env GOCACHE=/tmp/tucotuco-go-test-all-t100 go test ./...`.
+- Verified `env GOCACHE=/tmp/tucotuco-go-build-t100 go build ./...`.
+- Confirmed again that `./.bin/` is absent and `golangci-lint` is not on `PATH`, so lint validation remains blocked on restoring a linter entrypoint in this checkout.
+- Marked `TASKS.md` T-100 complete after docs, tests, and build passed.
 
 ---
 
 ## NEXT
 
-**Task(s) to execute:** T-100
+**Task(s) to execute:** T-101 and T-102
 
 **Instructions for the incoming agent:**
 
 1. Read `AGENTS.md` and `INDEX.md` again before starting Phase 1 work.
-2. Start **T-100** first in `pkg/embed/`, wiring the now-complete Phase 1 executor surface (`T-098`, `T-099`, `T-082`) into a minimal embeddable API without mixing in `database/sql` driver registration or CLI work from later tasks.
-3. Aggregate semantics are now pinned in `SPEC_CHANGE [T-097]`; future planner or API wiring for grouped queries should follow that note instead of introducing new aggregate result rules ad hoc.
-4. Continue mirroring the shared executor lifecycle semantics from `internal/executor/executor.go` and the `SeqScan` open-failure rollback pattern from `internal/executor/seqscan.go` anywhere a child operator or lower-level dependency must be opened first.
-5. Continue validation with writable Go caches. Lint remains blocked in this checkout because `./.bin/golangci-lint` is missing and `golangci-lint` is not on `PATH`, so either restore a linter entrypoint first or record the blocker explicitly if it is still unavailable.
+2. Start **T-101** in `pkg/driver/`, mapping the new `pkg/embed` API onto `database/sql` without widening the SQL surface beyond what `pkg/embed` already executes today.
+3. **T-102** in `cmd/tucotuco/` is now available in parallel and should reuse `pkg/embed` directly instead of reimplementing SQL parsing or execution in the CLI layer.
+4. The current embed query bridge still inherits planner limits: `ORDER BY`, `GROUP BY`, `HAVING`, `DISTINCT`, joins, and SQL `LIMIT/OFFSET` remain unsupported and should continue returning structured diagnostics rather than partial behavior.
+5. `Open(path)` still persists catalog metadata only; table rows remain in-memory until Phase 2 storage work lands, so driver/CLI messaging should not imply durable row storage yet.
+6. Continue validation with writable Go caches. Lint remains blocked in this checkout because `./.bin/golangci-lint` is missing and `golangci-lint` is not on `PATH`, so either restore a linter entrypoint first or record the blocker explicitly if it is still unavailable.
 
-**Spec references:** `SPEC.md` §6, §7, §8, `SPEC_CHANGE [T-097]`
+**Spec references:** `SPEC.md` §6, §7, §8, §9, `SPEC_CHANGE [T-097]`
 
-**Estimated parallelism available:** 1 stream (`T-100`)
+**Estimated parallelism available:** 2 streams (`T-101`, `T-102`)
 
 ---
 
@@ -65,7 +67,7 @@ _None._
 | Milestone | Status | Tasks remaining |
 |-----------|--------|----------------|
 | M0 — Repo Ready | ✅ Complete | None |
-| M1 — SQL-92 Core | 🟨 In progress | T-037 to T-113 (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-060`, `T-061`, `T-062`, `T-063`, `T-070`, `T-071`, `T-072`, `T-073`, `T-080`, `T-081`, `T-082`, `T-090`, `T-091`, `T-092`, `T-093`, `T-094`, `T-095`, `T-096`, `T-097`, `T-098`, `T-099`, `T-112`, `T-113` complete) |
+| M1 — SQL-92 Core | 🟨 In progress | T-101, T-102, T-110, T-111 (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-060`, `T-061`, `T-062`, `T-063`, `T-070`, `T-071`, `T-072`, `T-073`, `T-080`, `T-081`, `T-082`, `T-090`, `T-091`, `T-092`, `T-093`, `T-094`, `T-095`, `T-096`, `T-097`, `T-098`, `T-099`, `T-100`, `T-112`, `T-113` complete) |
 | M2 — SQL-92 Full + Storage | 🔲 Not started | T-120 to T-171 |
 | M3 — SQL:1999 | 🔲 Not started | T-200 to T-261 |
 | M4 — SQL:2003 + Wire | 🔲 Not started | T-300 to T-312 |
@@ -101,3 +103,4 @@ _None._
 | #018 | 2026-04-20 | Codex | Completed T-095, T-098, and T-099; blocked T-097 | Parallelized the executor frontier with bounded subagents, added stable sort plus executor-local DML/DDL operators, validated executor and repo-wide tests/build, and raised `SPEC_QUESTION [T-097]` instead of guessing on aggregate semantics |
 | #019 | 2026-04-20 | Codex | Completed T-097 | Resolved the aggregate semantics toward PostgreSQL behavior, added executor-native hash aggregation with focused tests, validated executor and repo-wide tests/build, and advanced the baton to `T-100` and `T-113` |
 | #020 | 2026-04-20 | Codex | Completed T-113 | Added the missing executor fuzz target plus parser script fuzz coverage, validated the focused lexer/parser/executor packages, and narrowed the baton to `T-100` |
+| #021 | 2026-04-20 | Codex | Completed T-100 | Added the first `pkg/embed` API plus focused end-to-end tests/docs, validated repo-wide tests/build, and advanced the baton to `T-101` and `T-102` |

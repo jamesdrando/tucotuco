@@ -1,0 +1,152 @@
+package embed
+
+import (
+	"errors"
+	"io"
+
+	"github.com/jamesdrando/tucotuco/internal/executor"
+	"github.com/jamesdrando/tucotuco/internal/parser"
+)
+
+func (s *session) query(sql string) (*ResultSet, error) {
+	ctx, node, err := s.analyzeSingleStatement(sql)
+	if err != nil {
+		return nil, err
+	}
+
+	stmt, ok := node.(*parser.SelectStmt)
+	if !ok {
+		return nil, featureError(node, "Query only supports SELECT statements")
+	}
+
+	operator, columns, err := buildSelectOperator(stmt, ctx.bindings, ctx.types, s.store, s.tx)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := materializeRows(operator)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &ResultSet{
+		Columns: make([]Column, len(columns)),
+		Rows:    make([][]any, 0, len(rows)),
+	}
+	for index, column := range columns {
+		result.Columns[index] = Column{
+			Name: column.Name,
+			Type: canonicalTypeText(column.Type),
+		}
+	}
+	for _, row := range rows {
+		result.Rows = append(result.Rows, exportRow(row))
+	}
+
+	return result, nil
+}
+
+func materializeRows(operator executor.Operator) ([]executor.Row, error) {
+	if operator == nil {
+		return nil, internalError(nil, "query operator is nil")
+	}
+
+	if err := operator.Open(); err != nil {
+		return nil, err
+	}
+
+	rows := make([]executor.Row, 0)
+	var runErr error
+	for {
+		row, err := operator.Next()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			runErr = err
+			break
+		}
+		rows = append(rows, row.Clone())
+	}
+
+	closeErr := operator.Close()
+	if runErr != nil {
+		return nil, joinErrors(runErr, closeErr)
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+
+	return rows, nil
+}
+
+func runWriteOperator(operator executor.WriteOperator) (CommandResult, error) {
+	if operator == nil {
+		return CommandResult{}, internalError(nil, "write operator is nil")
+	}
+
+	if err := operator.Open(); err != nil {
+		return CommandResult{}, err
+	}
+
+	var runErr error
+	for {
+		_, err := operator.Next()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			runErr = err
+			break
+		}
+	}
+
+	result := CommandResult{RowsAffected: operator.AffectedRows()}
+	closeErr := operator.Close()
+	if runErr != nil {
+		return result, joinErrors(runErr, closeErr)
+	}
+	if closeErr != nil {
+		return result, closeErr
+	}
+
+	return result, nil
+}
+
+func runOperator(operator executor.Operator) error {
+	if operator == nil {
+		return internalError(nil, "operator is nil")
+	}
+
+	if err := operator.Open(); err != nil {
+		return err
+	}
+
+	var runErr error
+	for {
+		_, err := operator.Next()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			runErr = err
+			break
+		}
+	}
+
+	closeErr := operator.Close()
+	return joinErrors(runErr, closeErr)
+}
+
+func exportRow(row executor.Row) []any {
+	values := row.Values()
+	out := make([]any, len(values))
+	for index, value := range values {
+		out[index] = exportValue(value)
+	}
+
+	return out
+}
