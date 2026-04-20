@@ -168,16 +168,16 @@
 
 - [x] **T-091** — SeqScan operator `[parallel-safe]` `depends: T-090,T-072`
 
-- [ ] **T-092** — Filter operator `[parallel-safe]` `depends: T-090`
+- [x] **T-092** — Filter operator `[parallel-safe]` `depends: T-090`
 
-- [ ] **T-093** — Projection operator `[parallel-safe]` `depends: T-090`
+- [x] **T-093** — Projection operator `[parallel-safe]` `depends: T-090`
 
-- [ ] **T-094** — Expression evaluator (`eval(expr, row) Value`) `[serial]` `depends: T-090,T-013`
+- [x] **T-094** — Expression evaluator (`eval(expr, row) Value`) `[serial]` `depends: T-090,T-013`
   - Covers all SPEC §8.6 scalar functions for SQL-92 subset
 
 - [ ] **T-095** — Sort operator `[parallel-safe]` `depends: T-090,T-094`
 
-- [ ] **T-096** — Limit/Offset operator `[parallel-safe]` `depends: T-090`
+- [x] **T-096** — Limit/Offset operator `[parallel-safe]` `depends: T-090`
 
 - [ ] **T-097** — HashAggregate operator (GROUP BY + aggregate functions) `[serial]` `depends: T-094`
 
