@@ -189,22 +189,20 @@
 
 - [x] **T-100** — `pkg/embed` API: `Open(path) (*DB, error)`, `DB.Exec`, `DB.Query`, `DB.Begin` `[serial]` `depends: T-098,T-099,T-082`
 
-- [ ] **T-101** — `pkg/driver`: `database/sql` driver registration `[serial]` `depends: T-100`
+- [x] **T-101** — `pkg/driver`: `database/sql` driver registration `[serial]` `depends: T-100`
 
-- [ ] **T-102** — `cmd/tucotuco`: REPL + `--file` flag for script execution `[parallel-safe]` `depends: T-100`
+- [x] **T-102** — `cmd/tucotuco`: REPL + `--file` flag for script execution `[parallel-safe]` `depends: T-100`
 
 ### 1K — Testing Infrastructure
 
-- [ ] **T-110** — Golden-test harness: `.sql` input → `.txt` expected output `[serial]` `depends: T-102`
+- [x] **T-110** — Golden-test harness: `.sql` input → `.txt` expected output `[serial]` `depends: T-102`
 
-- [ ] **T-111** — SQL-92 compliance suite skeleton (50 minimum tests) `[parallel-safe]` `depends: T-110`
+- [x] **T-111** — SQL-92 compliance suite skeleton (50 minimum tests) `[parallel-safe]` `depends: T-110`
 
 - [x] **T-112** — Race-detector CI job `[parallel-safe]` `depends: T-003`
 
 - [x] **T-113** — Fuzz targets: lexer, parser, expression evaluator `[parallel-safe]` `depends: T-021,T-046,T-094`
 
----
-**MILESTONE M1: SQL-92 Core** — All Phase 1 tasks complete. `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE/DROP TABLE` work end-to-end in-memory. `database/sql` driver passes standard tests.
 
 ---
 
@@ -214,10 +212,10 @@
 
 ### 2A — Persistent Storage
 
-- [ ] **T-120** — Page layout design: slotted pages, page header, tuple format `[serial]` `depends: M1`
+- [x] **T-120** — Page layout design: slotted pages, page header, tuple format `[serial]` `depends: M1`
   - Document: `docs/storage.md`
 
-- [ ] **T-121** — Buffer pool manager (LRU eviction, dirty page tracking) `[serial]` `depends: T-120`
+- [x] **T-121** — Buffer pool manager (LRU eviction, dirty page tracking) `[serial]` `depends: T-120`
 
 - [ ] **T-122** — Heap file manager (table → set of pages) `[serial]` `depends: T-121`
 

@@ -1,0 +1,51 @@
+fixture: 037_string_literals
+
+statement 1:
+  sql:
+    SELECT 'a'
+  result:
+    query
+    columns:
+      [0] <unnamed> VARCHAR(1) NOT NULL
+    rows:
+      [0] "a"
+
+statement 2:
+  sql:
+    SELECT 'alpha'
+  result:
+    query
+    columns:
+      [0] <unnamed> VARCHAR(5) NOT NULL
+    rows:
+      [0] "alpha"
+
+statement 3:
+  sql:
+    SELECT 'semi;colon'
+  result:
+    query
+    columns:
+      [0] <unnamed> VARCHAR(10) NOT NULL
+    rows:
+      [0] "semi;colon"
+
+statement 4:
+  sql:
+    SELECT 'a' = 'a'
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 5:
+  sql:
+    SELECT 'alpha' <> 'beta'
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true

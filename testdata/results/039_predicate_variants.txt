@@ -1,0 +1,51 @@
+fixture: 039_predicate_variants
+
+statement 1:
+  sql:
+    SELECT 1 BETWEEN 0 AND 2
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 2:
+  sql:
+    SELECT 1 BETWEEN 2 AND 3
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] false
+
+statement 3:
+  sql:
+    SELECT 2 IN (1, 2, 3)
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 4:
+  sql:
+    SELECT 4 IN (1, 2, 3)
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] false
+
+statement 5:
+  sql:
+    SELECT 'abc' LIKE 'a%'
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true

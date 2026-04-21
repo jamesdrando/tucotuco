@@ -1,0 +1,5 @@
+CREATE TABLE flags (id INTEGER NOT NULL, score INTEGER NOT NULL);
+INSERT INTO flags VALUES (1, 40);
+INSERT INTO flags VALUES (2, 60);
+SELECT id FROM flags WHERE score > 50;
+SELECT score FROM flags WHERE id = 1;

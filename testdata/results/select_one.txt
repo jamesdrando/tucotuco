@@ -1,0 +1,11 @@
+fixture: select_one
+
+statement 1:
+  sql:
+    SELECT 1
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 1

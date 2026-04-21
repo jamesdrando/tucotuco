@@ -1,0 +1,9 @@
+fixture: 043_having_literal
+
+statement 1:
+  sql:
+    SELECT 1 HAVING 1 = 1
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:1 (offset 0): HAVING queries are not supported in Phase 1 planner

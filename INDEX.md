@@ -32,6 +32,7 @@ tucotuco/
 │   ├── storage/        # Storage engine interface + in-memory + on-disk impls
 │   │   ├── memory/     # In-memory row store (Phase 1 default)
 │   │   └── paged/      # Page-based on-disk store (Phase 2+)
+│   ├── script/         # Shared SQL script splitting/execution seam for CLI and compliance
 │   ├── index/          # Index manager (B-tree, hash)
 │   ├── txn/            # Transaction manager (MVCC)
 │   ├── wal/            # Write-ahead log

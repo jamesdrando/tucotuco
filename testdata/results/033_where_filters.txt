@@ -1,0 +1,51 @@
+fixture: 033_where_filters
+
+statement 1:
+  sql:
+    SELECT 1 WHERE 1 = 1
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 1
+
+statement 2:
+  sql:
+    SELECT 1 WHERE 1 = 0
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      <empty>
+
+statement 3:
+  sql:
+    SELECT 1 WHERE 1 = NULL
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      <empty>
+
+statement 4:
+  sql:
+    SELECT 1 WHERE NULL IS NULL
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 1
+
+statement 5:
+  sql:
+    SELECT 1 WHERE NULL IS NOT NULL
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      <empty>

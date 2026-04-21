@@ -1,0 +1,5 @@
+CREATE TABLE widgets (id INTEGER NOT NULL);
+SELECT DISTINCT id FROM widgets;
+SELECT id FROM widgets GROUP BY id;
+SELECT id FROM widgets HAVING id > 0;
+SELECT id FROM widgets ORDER BY id;

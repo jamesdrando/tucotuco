@@ -1,0 +1,5 @@
+SELECT 1 + 2;
+SELECT 7 - 3;
+SELECT 4 * 5;
+SELECT 8 + 0;
+SELECT 100 - 1;

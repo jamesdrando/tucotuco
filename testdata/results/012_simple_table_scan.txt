@@ -1,0 +1,45 @@
+fixture: 012_simple_table_scan
+
+statement 1:
+  sql:
+    CREATE TABLE metrics (id INTEGER NOT NULL, qty INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO metrics VALUES (1, 10)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO metrics VALUES (2, 20)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    SELECT id, qty FROM metrics
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+      [1] qty INTEGER NOT NULL
+    rows:
+      [0] 1 | 10
+      [1] 2 | 20
+
+statement 5:
+  sql:
+    SELECT qty + 1 AS next_qty FROM metrics
+  result:
+    query
+    columns:
+      [0] next_qty INTEGER NOT NULL
+    rows:
+      [0] 11
+      [1] 21

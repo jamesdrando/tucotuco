@@ -1,0 +1,44 @@
+fixture: 017_parenthesized_math
+
+statement 1:
+  sql:
+    CREATE TABLE exprs (x INTEGER NOT NULL, y INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO exprs VALUES (4, 1)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO exprs VALUES (6, 2)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    SELECT (x + y) * 2 AS doubled_sum FROM exprs
+  result:
+    query
+    columns:
+      [0] doubled_sum INTEGER NOT NULL
+    rows:
+      [0] 10
+      [1] 16
+
+statement 5:
+  sql:
+    SELECT x + (y * 3) AS mixed_math FROM exprs
+  result:
+    query
+    columns:
+      [0] mixed_math INTEGER NOT NULL
+    rows:
+      [0] 7
+      [1] 12

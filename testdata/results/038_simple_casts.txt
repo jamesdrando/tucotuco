@@ -1,0 +1,51 @@
+fixture: 038_simple_casts
+
+statement 1:
+  sql:
+    SELECT CAST('42' AS INTEGER)
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 42
+
+statement 2:
+  sql:
+    SELECT CAST(7 AS CHARACTER VARYING(3))
+  result:
+    query
+    columns:
+      [0] <unnamed> VARCHAR(3) NOT NULL
+    rows:
+      [0] "7"
+
+statement 3:
+  sql:
+    SELECT CAST(NULL AS INTEGER)
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER
+    rows:
+      [0] NULL
+
+statement 4:
+  sql:
+    SELECT CAST('abc' AS TEXT)
+  result:
+    query
+    columns:
+      [0] <unnamed> TEXT NOT NULL
+    rows:
+      [0] "abc"
+
+statement 5:
+  sql:
+    SELECT CAST('5' AS BIGINT)
+  result:
+    query
+    columns:
+      [0] <unnamed> BIGINT NOT NULL
+    rows:
+      [0] 5

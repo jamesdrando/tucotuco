@@ -1,0 +1,42 @@
+fixture: 014_filter_equals
+
+statement 1:
+  sql:
+    CREATE TABLE items (id INTEGER NOT NULL, qty INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO items VALUES (1, 5)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO items VALUES (2, 15)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    SELECT id FROM items WHERE id = 2
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      [0] 2
+
+statement 5:
+  sql:
+    SELECT qty FROM items WHERE qty <> 5
+  result:
+    query
+    columns:
+      [0] qty INTEGER NOT NULL
+    rows:
+      [0] 15

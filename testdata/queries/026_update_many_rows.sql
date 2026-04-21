@@ -1,0 +1,5 @@
+CREATE TABLE numbers (id INTEGER NOT NULL, qty INTEGER NOT NULL);
+INSERT INTO numbers VALUES (1, 10);
+INSERT INTO numbers VALUES (2, 20);
+INSERT INTO numbers VALUES (3, 30);
+UPDATE numbers SET qty = 99 WHERE id > 1;

@@ -1,0 +1,41 @@
+fixture: 059_select_planner_limits_c
+
+statement 1:
+  sql:
+    CREATE TABLE widgets (id INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    SELECT widgets.id FROM widgets, widgets AS other
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:33 (offset 32): multiple FROM sources are not supported in Phase 1 planner
+
+statement 3:
+  sql:
+    SELECT left_widget.id FROM widgets AS left_widget JOIN widgets AS right_widget USING (id)
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:28 (offset 27): JOIN planning is not supported in Phase 1 planner
+
+statement 4:
+  sql:
+    SELECT public.widgets.id FROM widgets
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42601] at 1:8 (offset 7): expected expression, found keyword "PUBLIC"
+      [1] ERROR [SQLSTATE 42601] at 1:14 (offset 13): expected semicolon or end of input, found punctuation "."
+
+statement 5:
+  sql:
+    SELECT COUNT(*) FROM widgets
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:8 (offset 7): aggregate queries are not supported in Phase 1 planner

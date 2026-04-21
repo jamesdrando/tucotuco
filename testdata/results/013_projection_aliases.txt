@@ -1,0 +1,45 @@
+fixture: 013_projection_aliases
+
+statement 1:
+  sql:
+    CREATE TABLE accounts (id INTEGER NOT NULL, balance INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO accounts VALUES (1, 100)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO accounts VALUES (2, 250)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    SELECT id AS account_id, balance AS current_balance FROM accounts
+  result:
+    query
+    columns:
+      [0] account_id INTEGER NOT NULL
+      [1] current_balance INTEGER NOT NULL
+    rows:
+      [0] 1 | 100
+      [1] 2 | 250
+
+statement 5:
+  sql:
+    SELECT balance - 10 AS after_fee FROM accounts
+  result:
+    query
+    columns:
+      [0] after_fee INTEGER NOT NULL
+    rows:
+      [0] 90
+      [1] 240

@@ -1,0 +1,40 @@
+fixture: 024_drop_recreate
+
+statement 1:
+  sql:
+    CREATE TABLE cache (id INTEGER NOT NULL, amount INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO cache VALUES (1, 9)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    DROP TABLE cache
+  result:
+    ok
+    rows_affected: 0
+
+statement 4:
+  sql:
+    CREATE TABLE cache (id INTEGER NOT NULL, amount INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 5:
+  sql:
+    SELECT id, amount FROM cache
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+      [1] amount INTEGER NOT NULL
+    rows:
+      <empty>

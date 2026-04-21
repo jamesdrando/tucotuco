@@ -1,0 +1,42 @@
+fixture: 051_missing_relations
+
+statement 1:
+  sql:
+    SELECT * FROM missing
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42P01] at 1:15 (offset 14): table "public.missing" does not exist
+      [1] ERROR [SQLSTATE 42703] at 1:8 (offset 7): cannot resolve * without a FROM source
+
+statement 2:
+  sql:
+    INSERT INTO missing VALUES (1)
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42P01] at 1:13 (offset 12): table "public.missing" does not exist
+
+statement 3:
+  sql:
+    UPDATE missing SET id = 1
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42P01] at 1:8 (offset 7): table "public.missing" does not exist
+
+statement 4:
+  sql:
+    DELETE FROM missing
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42P01] at 1:13 (offset 12): table "public.missing" does not exist
+
+statement 5:
+  sql:
+    DROP TABLE missing
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42P01] at 1:12 (offset 11): table "public.missing" does not exist

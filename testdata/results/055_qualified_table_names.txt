@@ -1,0 +1,41 @@
+fixture: 055_qualified_table_names
+
+statement 1:
+  sql:
+    CREATE TABLE a.b.c (id INTEGER)
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:14 (offset 13): qualified table names deeper than schema.table are not supported in Phase 1
+
+statement 2:
+  sql:
+    DROP TABLE a.b.c
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42P01] at 1:12 (offset 11): table reference "a.b.c" is not supported in Phase 1
+
+statement 3:
+  sql:
+    INSERT INTO a.b.c VALUES (1)
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42P01] at 1:13 (offset 12): table reference "a.b.c" is not supported in Phase 1
+
+statement 4:
+  sql:
+    UPDATE a.b.c SET id = 1
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42P01] at 1:8 (offset 7): table reference "a.b.c" is not supported in Phase 1
+
+statement 5:
+  sql:
+    DELETE FROM a.b.c
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42P01] at 1:13 (offset 12): table reference "a.b.c" is not supported in Phase 1

@@ -1,0 +1,41 @@
+fixture: 029_update_then_select
+
+statement 1:
+  sql:
+    CREATE TABLE ledger (id INTEGER NOT NULL, balance INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO ledger VALUES (1, 1000)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO ledger VALUES (2, 2000)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    UPDATE ledger SET balance = 1500 WHERE id = 1
+  result:
+    ok
+    rows_affected: 1
+
+statement 5:
+  sql:
+    SELECT id, balance FROM ledger
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+      [1] balance INTEGER NOT NULL
+    rows:
+      [0] 1 | 1500
+      [1] 2 | 2000

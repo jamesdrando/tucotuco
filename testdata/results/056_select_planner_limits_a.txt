@@ -1,0 +1,40 @@
+fixture: 056_select_planner_limits_a
+
+statement 1:
+  sql:
+    CREATE TABLE widgets (id INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    SELECT DISTINCT id FROM widgets
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:1 (offset 0): DISTINCT queries are not supported in Phase 1 planner
+
+statement 3:
+  sql:
+    SELECT id FROM widgets GROUP BY id
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:1 (offset 0): GROUP BY queries are not supported in Phase 1 planner
+
+statement 4:
+  sql:
+    SELECT id FROM widgets HAVING id > 0
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:1 (offset 0): HAVING queries are not supported in Phase 1 planner
+
+statement 5:
+  sql:
+    SELECT id FROM widgets ORDER BY id
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:1 (offset 0): ORDER BY queries are not supported in Phase 1 planner

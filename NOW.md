@@ -18,41 +18,44 @@
 
 ## JUST DONE
 
-Completed `TASKS.md` T-100 using `SPEC.md` §6, §7, §8, and §9, wiring the current Phase 1 engine into the first embeddable Go API and carrying it through focused end-to-end validation.
+Completed `TASKS.md` T-121 by landing the first concrete buffer-pool layer in `internal/storage/paged/` on top of the T-120 page-layout contract.
 
-- Added the public `pkg/embed` surface with `Open(path)`, `DB.Exec`, `DB.Query`, `DB.Begin`, mirrored `Tx` methods, eager `ResultSet`/`CommandResult` types, and public `SQLError` diagnostics that do not leak internal packages.
-- `Open(path)` now loads or creates the Phase 1 catalog metadata file, bootstraps the implicit `public` schema, and uses the in-memory row store as the backing storage engine.
-- Added the first embed-side SQL execution bridge from lexer/parser/analyzer/planner into executor operators for the current SELECT subset, including `SELECT` without `FROM` via a local singleton-row operator and plan lowering for scan/filter/project.
-- Added direct embed-side execution for `INSERT`, `UPDATE`, `DELETE`, `CREATE TABLE`, and `DROP TABLE`, plus autocommit transaction handling around `DB.Exec` and read-only autocommit around `DB.Query`.
-- Explicit `Tx` support now covers query and DML work with commit/rollback, while SQL `BEGIN` / `COMMIT` / `ROLLBACK` are rejected from `Exec` in favor of the Go transaction API.
-- Insert execution now rejects omitted-column cases that would require runtime `DEFAULT`, generated-column, or identity synthesis instead of guessing a value; `INSERT DEFAULT VALUES` is still reported as unsupported at execution time.
-- Added `internal/storage/memory/ddl.go` so autocommit `CREATE TABLE` resets stale heaps and `DROP TABLE` removes heap state, preventing dropped tables from leaking rows into later recreations.
-- Added `pkg/embed/embed_test.go` and updated `docs/api.md`, covering catalog bootstrap/reopen behavior, `SELECT 1`, end-to-end `CREATE`/`INSERT`/`SELECT`/`UPDATE`/`DELETE`/`DROP`, transaction commit/rollback, DB-call blocking during explicit transactions, and the intentional feature-not-supported cases.
-- Verified `env GOCACHE=/tmp/tucotuco-go-test-embed go test ./pkg/embed`.
-- Verified `env GOCACHE=/tmp/tucotuco-go-test-t100 go test ./pkg/embed ./internal/storage/... ./internal/catalog`.
-- Verified `env GOCACHE=/tmp/tucotuco-go-test-all-t100 go test ./...`.
-- Verified `env GOCACHE=/tmp/tucotuco-go-build-t100 go build ./...`.
-- Confirmed again that `./.bin/` is absent and `golangci-lint` is not on `PATH`, so lint validation remains blocked on restoring a linter entrypoint in this checkout.
-- Marked `TASKS.md` T-100 complete after docs, tests, and build passed.
+- Added `internal/storage/paged/page.go` with a 64-byte page-header codec, checksum handling, page initialization, and header validation aligned with `docs/storage.md`.
+- Added `internal/storage/paged/store.go` with a `PageStore` abstraction and a file-backed `FileStore` that reserves page `0` for relation metadata and exposes page-level read/write/allocate behavior.
+- Added `internal/storage/paged/manager.go` with a `Manager` buffer pool that implements:
+  - page fetch and new-page allocation
+  - pin/unpin lifecycle
+  - dirty-page tracking
+  - explicit flush / flush-all
+  - LRU eviction over unpinned frames
+  - stale-page protection via internal tokens
+- Added focused tests in `internal/storage/paged/store_test.go` and `internal/storage/paged/manager_test.go` covering page initialization/validation, corruption detection, dirty eviction/writeback, and cache-full pinned-frame behavior.
+- Verified focused validation with a writable Go cache:
+  - `env GOCACHE=/tmp/tucotuco-go-test-t121-focused go test ./internal/storage/paged/...`
+- Verified repo-wide regression/build coverage:
+  - `env GOCACHE=/tmp/tucotuco-go-test-all-t121 go test ./...`
+  - `env GOCACHE=/tmp/tucotuco-go-build-t121 go build ./...`
+- Lint remains environment-blocked unless a `golangci-lint` entrypoint is restored in this checkout.
+- Marked `TASKS.md` T-121 complete after focused and repo-wide validation passed.
 
 ---
 
 ## NEXT
 
-**Task(s) to execute:** T-101 and T-102
+**Task(s) to execute:** T-122
 
 **Instructions for the incoming agent:**
 
-1. Read `AGENTS.md` and `INDEX.md` again before starting Phase 1 work.
-2. Start **T-101** in `pkg/driver/`, mapping the new `pkg/embed` API onto `database/sql` without widening the SQL surface beyond what `pkg/embed` already executes today.
-3. **T-102** in `cmd/tucotuco/` is now available in parallel and should reuse `pkg/embed` directly instead of reimplementing SQL parsing or execution in the CLI layer.
-4. The current embed query bridge still inherits planner limits: `ORDER BY`, `GROUP BY`, `HAVING`, `DISTINCT`, joins, and SQL `LIMIT/OFFSET` remain unsupported and should continue returning structured diagnostics rather than partial behavior.
-5. `Open(path)` still persists catalog metadata only; table rows remain in-memory until Phase 2 storage work lands, so driver/CLI messaging should not imply durable row storage yet.
-6. Continue validation with writable Go caches. Lint remains blocked in this checkout because `./.bin/golangci-lint` is missing and `golangci-lint` is not on `PATH`, so either restore a linter entrypoint first or record the blocker explicitly if it is still unavailable.
+1. Read `AGENTS.md` and `INDEX.md` again before starting the next storage task.
+2. Start **T-122** by building the heap file manager on top of the new paged buffer pool: relation-file layout, table-to-page mapping, page-0 metadata usage, page selection for inserts, and row routing to page/slot handles.
+3. Keep the task boundary sharp: T-122 should consume the buffer pool and page format, but not absorb WAL durability rules from T-123 or MVCC visibility from T-125.
+4. Use `docs/storage.md` and the new `internal/storage/paged/` types as the contract. Prefer adding small internal helpers under `internal/storage/paged/` or a neighboring heap-file package rather than redesigning the buffer-pool API.
+5. Preserve the existing `internal/storage` public interfaces unless the heap-file implementation needs small compatible extensions.
+6. Lint remains environment-blocked unless a `golangci-lint` entrypoint is restored in this checkout.
 
 **Spec references:** `SPEC.md` §6, §7, §8, §9, `SPEC_CHANGE [T-097]`
 
-**Estimated parallelism available:** 2 streams (`T-101`, `T-102`)
+**Estimated parallelism available:** 1 stream (`T-122` is serial)
 
 ---
 
@@ -67,8 +70,8 @@ _None._
 | Milestone | Status | Tasks remaining |
 |-----------|--------|----------------|
 | M0 — Repo Ready | ✅ Complete | None |
-| M1 — SQL-92 Core | 🟨 In progress | T-101, T-102, T-110, T-111 (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-060`, `T-061`, `T-062`, `T-063`, `T-070`, `T-071`, `T-072`, `T-073`, `T-080`, `T-081`, `T-082`, `T-090`, `T-091`, `T-092`, `T-093`, `T-094`, `T-095`, `T-096`, `T-097`, `T-098`, `T-099`, `T-100`, `T-112`, `T-113` complete) |
-| M2 — SQL-92 Full + Storage | 🔲 Not started | T-120 to T-171 |
+| M1 — SQL-92 Core | ✅ Complete | None (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-060`, `T-061`, `T-062`, `T-063`, `T-070`, `T-071`, `T-072`, `T-073`, `T-080`, `T-081`, `T-082`, `T-090`, `T-091`, `T-092`, `T-093`, `T-094`, `T-095`, `T-096`, `T-097`, `T-098`, `T-099`, `T-100`, `T-101`, `T-102`, `T-110`, `T-111`, `T-112`, `T-113` complete) |
+| M2 — SQL-92 Full + Storage | 🟨 In progress | T-122 to T-171 (`T-120`, `T-121` complete) |
 | M3 — SQL:1999 | 🔲 Not started | T-200 to T-261 |
 | M4 — SQL:2003 + Wire | 🔲 Not started | T-300 to T-312 |
 | M5 — SQL:2008 | 🔲 Not started | T-350 to T-356 |
@@ -104,3 +107,9 @@ _None._
 | #019 | 2026-04-20 | Codex | Completed T-097 | Resolved the aggregate semantics toward PostgreSQL behavior, added executor-native hash aggregation with focused tests, validated executor and repo-wide tests/build, and advanced the baton to `T-100` and `T-113` |
 | #020 | 2026-04-20 | Codex | Completed T-113 | Added the missing executor fuzz target plus parser script fuzz coverage, validated the focused lexer/parser/executor packages, and narrowed the baton to `T-100` |
 | #021 | 2026-04-20 | Codex | Completed T-100 | Added the first `pkg/embed` API plus focused end-to-end tests/docs, validated repo-wide tests/build, and advanced the baton to `T-101` and `T-102` |
+| #022 | 2026-04-20 | Codex | Implemented T-101 and T-102 (validation pending) | Used six bounded subagents to land the Phase 1 `database/sql` driver plus CLI code/tests/docs, corrected connector sharing to avoid cross-`sql.DB` state leakage, isolated CLI tests from source-tree default-path writes, and left validation/lint as the explicit next step |
+| #023 | 2026-04-20 | Codex | Completed T-101 and T-102 | Validated `pkg/driver` and `cmd/tucotuco`, fixed driver transaction routing through active `embed.Tx`, passed repo-wide tests/build, recorded lint as environment-blocked, and advanced the baton to `T-110` |
+| #024 | 2026-04-20 | Codex | Completed T-110 | Added `internal/script`, refactored the CLI and SQL-92 golden harness onto the shared script seam, seeded deterministic `.sql` / `.txt` fixtures, fixed closeout regressions found by validation, passed focused and repo-wide tests/build, and advanced the baton to `T-111` |
+| #025 | 2026-04-20 | Codex | Completed T-111 | Expanded `compliance/sql92` to 50+ deterministic cases, fixed validation-driven fixture drift across supported and unsupported paths, passed focused and repo-wide tests/build, closed M1, and advanced the baton to `T-120` |
+| #026 | 2026-04-20 | Codex | Completed T-120 | Replaced the storage stub with a concrete paged-layout design in `docs/storage.md`, aligned the document with the current `RowHandle` API and future MVCC/WAL needs, and advanced the baton to `T-121` |
+| #027 | 2026-04-20 | Codex | Completed T-121 | Added the first `internal/storage/paged` buffer-pool layer with validated page headers, file-backed page storage, LRU-managed frames, focused paged-storage tests, and repo-wide green validation, then advanced the baton to `T-122` |

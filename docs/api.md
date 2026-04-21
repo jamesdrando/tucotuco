@@ -2,6 +2,9 @@
 
 `pkg/embed` is the current embeddable Phase 1 API.
 
+`pkg/driver` registers the `database/sql` driver name `tucotuco` and maps it
+to the same Phase 1 engine.
+
 ```go
 db, err := embed.Open("/path/to/catalog.json")
 result, err := db.Exec("CREATE TABLE widgets (id INTEGER, name VARCHAR(20))")
@@ -36,7 +39,7 @@ Current execution scope is intentionally small and matches the existing planner 
 
 Current limitations:
 
-- row storage is still in-memory only; `Open(path)` persists catalog metadata, not table contents
+- row storage is still in-memory only; `Open(path)` and `sql.Open("tucotuco", path)` persist catalog metadata, not table contents
 - SQL transaction-control statements (`BEGIN`, `COMMIT`, `ROLLBACK`) are rejected; use the Go transaction API instead
 - planner-driven query execution still rejects `ORDER BY`, `GROUP BY`, `HAVING`, `DISTINCT`, joins, and `LIMIT/OFFSET`
 - `INSERT DEFAULT VALUES` and omitted columns that would require runtime `DEFAULT`, generated, or identity synthesis are rejected with feature-not-supported errors

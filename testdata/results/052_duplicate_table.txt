@@ -1,0 +1,38 @@
+fixture: 052_duplicate_table
+
+statement 1:
+  sql:
+    CREATE TABLE widgets (id INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    CREATE TABLE widgets (id INTEGER NOT NULL)
+  result:
+    error
+    diagnostics:
+      [0] catalog: table already exists
+
+statement 3:
+  sql:
+    DROP TABLE widgets
+  result:
+    ok
+    rows_affected: 0
+
+statement 4:
+  sql:
+    DROP TABLE widgets
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42P01] at 1:12 (offset 11): table "public.widgets" does not exist
+
+statement 5:
+  sql:
+    CREATE TABLE widgets (id INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0

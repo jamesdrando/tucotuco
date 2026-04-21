@@ -1,0 +1,5 @@
+CREATE TABLE ranges (id INTEGER NOT NULL, qty INTEGER NOT NULL);
+INSERT INTO ranges VALUES (1, 10);
+INSERT INTO ranges VALUES (2, 20);
+SELECT id FROM ranges WHERE qty >= 20;
+SELECT qty FROM ranges WHERE id <= 1;

@@ -1,0 +1,43 @@
+fixture: 040_table_null_filtering
+
+statement 1:
+  sql:
+    CREATE TABLE metrics (id INTEGER NOT NULL, reading INTEGER)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO metrics VALUES (1, 10)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO metrics VALUES (2, NULL)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    SELECT id FROM metrics WHERE reading IS NULL
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      [0] 2
+
+statement 5:
+  sql:
+    SELECT id, reading FROM metrics WHERE reading IS NOT NULL
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+      [1] reading INTEGER
+    rows:
+      [0] 1 | 10

@@ -1,0 +1,3 @@
+CREATE TABLE widgets (id INTEGER NOT NULL);
+INSERT INTO widgets VALUES (1);
+SELECT id FROM widgets;

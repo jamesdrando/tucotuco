@@ -1,0 +1,51 @@
+fixture: 035_arithmetic_projection
+
+statement 1:
+  sql:
+    SELECT 1 + 2
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 3
+
+statement 2:
+  sql:
+    SELECT 7 - 3
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 4
+
+statement 3:
+  sql:
+    SELECT 4 * 5
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 20
+
+statement 4:
+  sql:
+    SELECT 8 + 0
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 8
+
+statement 5:
+  sql:
+    SELECT 100 - 1
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 99

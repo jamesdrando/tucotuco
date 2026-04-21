@@ -1,0 +1,9 @@
+fixture: 048_full_join_derived
+
+statement 1:
+  sql:
+    SELECT 1 FROM (SELECT 1) AS a FULL OUTER JOIN (SELECT 2) AS b ON 1 = 1
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:15 (offset 14): JOIN planning is not supported in Phase 1 planner

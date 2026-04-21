@@ -1,0 +1,39 @@
+fixture: 054_default_and_missing_required
+
+statement 1:
+  sql:
+    CREATE TABLE widgets (id INTEGER NOT NULL, name VARCHAR(20) DEFAULT 'x')
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO widgets (id) VALUES (1)
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000]: INSERT execution does not yet synthesize DEFAULT values for omitted column "name"
+
+statement 3:
+  sql:
+    CREATE TABLE widgets_req (id INTEGER NOT NULL, code VARCHAR(12))
+  result:
+    ok
+    rows_affected: 0
+
+statement 4:
+  sql:
+    INSERT INTO widgets_req (code) VALUES ('x')
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 23502] at 1:1 (offset 0): INSERT omits required column "id"
+
+statement 5:
+  sql:
+    INSERT INTO widgets_req DEFAULT VALUES
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 23502] at 1:1 (offset 0): DEFAULT VALUES has no value for required column "id"

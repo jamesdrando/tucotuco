@@ -1,0 +1,39 @@
+fixture: 060_insert_shape
+
+statement 1:
+  sql:
+    CREATE TABLE widgets (id INTEGER NOT NULL, code VARCHAR(12))
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO widgets (id, code) VALUES (1)
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42601] at 1:32 (offset 31): INSERT row has 1 values for 2 target columns
+
+statement 3:
+  sql:
+    INSERT INTO widgets (id, code) VALUES (1, 'x')
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    INSERT INTO widgets (id) SELECT 1, 2
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42601] at 1:26 (offset 25): INSERT query returns 2 columns for 1 target columns
+
+statement 5:
+  sql:
+    INSERT INTO widgets (id, code) SELECT 1
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42601] at 1:32 (offset 31): INSERT query returns 1 columns for 2 target columns

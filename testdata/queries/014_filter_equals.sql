@@ -1,0 +1,5 @@
+CREATE TABLE items (id INTEGER NOT NULL, qty INTEGER NOT NULL);
+INSERT INTO items VALUES (1, 5);
+INSERT INTO items VALUES (2, 15);
+SELECT id FROM items WHERE id = 2;
+SELECT qty FROM items WHERE qty <> 5;

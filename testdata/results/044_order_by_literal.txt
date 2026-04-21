@@ -1,0 +1,9 @@
+fixture: 044_order_by_literal
+
+statement 1:
+  sql:
+    SELECT 1 ORDER BY 1
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:1 (offset 0): ORDER BY queries are not supported in Phase 1 planner

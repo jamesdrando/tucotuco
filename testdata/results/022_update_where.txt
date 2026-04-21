@@ -1,0 +1,40 @@
+fixture: 022_update_where
+
+statement 1:
+  sql:
+    CREATE TABLE orders (id INTEGER NOT NULL, total INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO orders VALUES (1, 100)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO orders VALUES (2, 200)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    UPDATE orders SET total = 250 WHERE id = 2
+  result:
+    ok
+    rows_affected: 1
+
+statement 5:
+  sql:
+    SELECT id, total FROM orders WHERE id = 2
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+      [1] total INTEGER NOT NULL
+    rows:
+      [0] 2 | 250

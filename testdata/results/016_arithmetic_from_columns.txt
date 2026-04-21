@@ -1,0 +1,44 @@
+fixture: 016_arithmetic_from_columns
+
+statement 1:
+  sql:
+    CREATE TABLE calc (a INTEGER NOT NULL, b INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO calc VALUES (2, 3)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO calc VALUES (5, 7)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    SELECT a + b AS sum_ab FROM calc
+  result:
+    query
+    columns:
+      [0] sum_ab INTEGER NOT NULL
+    rows:
+      [0] 5
+      [1] 12
+
+statement 5:
+  sql:
+    SELECT a * b AS product_ab FROM calc
+  result:
+    query
+    columns:
+      [0] product_ab INTEGER NOT NULL
+    rows:
+      [0] 6
+      [1] 35

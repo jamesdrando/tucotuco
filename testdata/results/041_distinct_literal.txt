@@ -1,0 +1,9 @@
+fixture: 041_distinct_literal
+
+statement 1:
+  sql:
+    SELECT DISTINCT 1
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:1 (offset 0): DISTINCT queries are not supported in Phase 1 planner

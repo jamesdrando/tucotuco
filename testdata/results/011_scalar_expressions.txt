@@ -1,0 +1,51 @@
+fixture: 011_scalar_expressions
+
+statement 1:
+  sql:
+    SELECT 1 AS one
+  result:
+    query
+    columns:
+      [0] one INTEGER NOT NULL
+    rows:
+      [0] 1
+
+statement 2:
+  sql:
+    SELECT 2 + 3 AS five
+  result:
+    query
+    columns:
+      [0] five INTEGER NOT NULL
+    rows:
+      [0] 5
+
+statement 3:
+  sql:
+    SELECT 7 - 4 AS three
+  result:
+    query
+    columns:
+      [0] three INTEGER NOT NULL
+    rows:
+      [0] 3
+
+statement 4:
+  sql:
+    SELECT 2 * 6 AS twelve
+  result:
+    query
+    columns:
+      [0] twelve INTEGER NOT NULL
+    rows:
+      [0] 12
+
+statement 5:
+  sql:
+    SELECT (8 + 2) * 3 AS thirty
+  result:
+    query
+    columns:
+      [0] thirty INTEGER NOT NULL
+    rows:
+      [0] 30

@@ -1,0 +1,5 @@
+SELECT 1 = 1;
+SELECT 1 <> 2;
+SELECT 2 > 1;
+SELECT 2 <= 2;
+SELECT 3 >= 4;

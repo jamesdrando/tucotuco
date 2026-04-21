@@ -1,0 +1,5 @@
+CREATE TABLE calc (a INTEGER NOT NULL, b INTEGER NOT NULL);
+INSERT INTO calc VALUES (2, 3);
+INSERT INTO calc VALUES (5, 7);
+SELECT a + b AS sum_ab FROM calc;
+SELECT a * b AS product_ab FROM calc;

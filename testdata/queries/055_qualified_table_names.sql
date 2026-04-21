@@ -1,0 +1,5 @@
+CREATE TABLE a.b.c (id INTEGER);
+DROP TABLE a.b.c;
+INSERT INTO a.b.c VALUES (1);
+UPDATE a.b.c SET id = 1;
+DELETE FROM a.b.c;

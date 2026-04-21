@@ -1,0 +1,40 @@
+fixture: 030_delete_reinsert_select
+
+statement 1:
+  sql:
+    CREATE TABLE archive (id INTEGER NOT NULL, flag INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO archive VALUES (1, 1)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    DELETE FROM archive WHERE id = 1
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    INSERT INTO archive VALUES (2, 0)
+  result:
+    ok
+    rows_affected: 1
+
+statement 5:
+  sql:
+    SELECT id, flag FROM archive
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+      [1] flag INTEGER NOT NULL
+    rows:
+      [0] 2 | 0

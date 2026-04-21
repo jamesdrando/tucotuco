@@ -1,0 +1,9 @@
+fixture: transaction_control_rejection
+
+statement 1:
+  sql:
+    BEGIN
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:1 (offset 0): transaction-control SQL is not supported here; use DB.Begin / Tx.Commit / Tx.Rollback

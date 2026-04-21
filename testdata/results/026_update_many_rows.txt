@@ -1,0 +1,36 @@
+fixture: 026_update_many_rows
+
+statement 1:
+  sql:
+    CREATE TABLE numbers (id INTEGER NOT NULL, qty INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO numbers VALUES (1, 10)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO numbers VALUES (2, 20)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    INSERT INTO numbers VALUES (3, 30)
+  result:
+    ok
+    rows_affected: 1
+
+statement 5:
+  sql:
+    UPDATE numbers SET qty = 99 WHERE id > 1
+  result:
+    ok
+    rows_affected: 2

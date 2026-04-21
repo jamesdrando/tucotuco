@@ -1,0 +1,51 @@
+fixture: 031_comparison_literals
+
+statement 1:
+  sql:
+    SELECT 1 = 1
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 2:
+  sql:
+    SELECT 1 <> 2
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 3:
+  sql:
+    SELECT 2 > 1
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 4:
+  sql:
+    SELECT 2 <= 2
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 5:
+  sql:
+    SELECT 3 >= 4
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] false

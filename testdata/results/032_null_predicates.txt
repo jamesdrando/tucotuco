@@ -1,0 +1,51 @@
+fixture: 032_null_predicates
+
+statement 1:
+  sql:
+    SELECT 1 = NULL
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN
+    rows:
+      [0] NULL
+
+statement 2:
+  sql:
+    SELECT NULL = NULL
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN
+    rows:
+      [0] NULL
+
+statement 3:
+  sql:
+    SELECT 1 <> NULL
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN
+    rows:
+      [0] NULL
+
+statement 4:
+  sql:
+    SELECT NULL IS NULL
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 5:
+  sql:
+    SELECT NULL IS NOT NULL
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] false

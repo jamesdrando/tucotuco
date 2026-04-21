@@ -1,0 +1,5 @@
+CREATE TABLE widgets (id INTEGER NOT NULL, qty INTEGER NOT NULL);
+INSERT INTO widgets VALUES (1, 10);
+INSERT INTO widgets VALUES (2, 20);
+SELECT id, qty FROM widgets;
+SELECT qty FROM widgets WHERE id = 2;

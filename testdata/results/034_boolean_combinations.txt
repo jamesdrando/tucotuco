@@ -1,0 +1,51 @@
+fixture: 034_boolean_combinations
+
+statement 1:
+  sql:
+    SELECT 1 WHERE (1 = 1) AND (2 = 2)
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 1
+
+statement 2:
+  sql:
+    SELECT 1 WHERE (1 = 0) OR (2 = 2)
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 1
+
+statement 3:
+  sql:
+    SELECT 1 WHERE NOT (1 = 0)
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 1
+
+statement 4:
+  sql:
+    SELECT 1 WHERE (1 = 1) AND (1 = NULL)
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      <empty>
+
+statement 5:
+  sql:
+    SELECT 1 WHERE (1 = 0) OR (1 = NULL)
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      <empty>

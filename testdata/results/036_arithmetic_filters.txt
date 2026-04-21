@@ -1,0 +1,51 @@
+fixture: 036_arithmetic_filters
+
+statement 1:
+  sql:
+    SELECT 1 WHERE 2 + 2 = 4
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 1
+
+statement 2:
+  sql:
+    SELECT 1 WHERE 10 - 3 = 7
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 1
+
+statement 3:
+  sql:
+    SELECT 1 WHERE 2 * 3 = 6
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 1
+
+statement 4:
+  sql:
+    SELECT 1 WHERE 8 + 1 = 10
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      <empty>
+
+statement 5:
+  sql:
+    SELECT 1 WHERE 9 - 4 = 5 AND 2 + 2 = 4
+  result:
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 1

@@ -1,0 +1,5 @@
+CREATE TABLE archive (id INTEGER NOT NULL, flag INTEGER NOT NULL);
+INSERT INTO archive VALUES (1, 1);
+DELETE FROM archive WHERE id = 1;
+INSERT INTO archive VALUES (2, 0);
+SELECT id, flag FROM archive;

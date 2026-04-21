@@ -1,0 +1,42 @@
+fixture: 018_boolean_filters
+
+statement 1:
+  sql:
+    CREATE TABLE flags (id INTEGER NOT NULL, score INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO flags VALUES (1, 40)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO flags VALUES (2, 60)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    SELECT id FROM flags WHERE score > 50
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      [0] 2
+
+statement 5:
+  sql:
+    SELECT score FROM flags WHERE id = 1
+  result:
+    query
+    columns:
+      [0] score INTEGER NOT NULL
+    rows:
+      [0] 40
