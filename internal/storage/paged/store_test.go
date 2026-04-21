@@ -7,11 +7,12 @@ import (
 )
 
 type memoryStore struct {
-	mu       sync.Mutex
-	pageSize int
-	pages    map[PageID][]byte
-	writes   map[PageID]int
-	closed   bool
+	mu        sync.Mutex
+	pageSize  int
+	pages     map[PageID][]byte
+	writes    map[PageID]int
+	writeHook func(PageID, []byte) error
+	closed    bool
 }
 
 func newMemoryStore(t *testing.T, pageSize int, pageCount int) *memoryStore {
@@ -68,6 +69,11 @@ func (s *memoryStore) WritePage(pageID PageID, src []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.writeHook != nil {
+		if err := s.writeHook(pageID, src); err != nil {
+			return err
+		}
+	}
 	page := make([]byte, len(src))
 	copy(page, src)
 	s.pages[pageID] = page

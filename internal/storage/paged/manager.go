@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/jamesdrando/tucotuco/internal/wal"
 )
 
 var (
@@ -38,10 +40,15 @@ type frame struct {
 	pageType PageType
 }
 
+type walSyncer interface {
+	Sync(lsn wal.LSN) error
+}
+
 // Manager coordinates page caching, pinning, dirty tracking, and eviction.
 type Manager struct {
 	mu        sync.Mutex
 	store     PageStore
+	wal       walSyncer
 	pageSize  int
 	cacheSize int
 	frames    map[PageID]*frame
@@ -51,6 +58,10 @@ type Manager struct {
 
 // NewManager constructs a buffer pool manager on top of a page store.
 func NewManager(store PageStore, cacheSize int) (*Manager, error) {
+	return newManager(store, cacheSize, nil)
+}
+
+func newManager(store PageStore, cacheSize int, wal walSyncer) (*Manager, error) {
 	if store == nil {
 		return nil, ErrInvalidConfig
 	}
@@ -66,6 +77,7 @@ func NewManager(store PageStore, cacheSize int) (*Manager, error) {
 
 	return &Manager{
 		store:     store,
+		wal:       wal,
 		pageSize:  store.PageSize(),
 		cacheSize: cacheSize,
 		frames:    make(map[PageID]*frame, cacheSize),
@@ -300,6 +312,14 @@ func (m *Manager) flushFrameLocked(fr *frame) error {
 	header, err := DecodePageHeader(pageBytes)
 	if err != nil {
 		return err
+	}
+	if m.wal != nil {
+		if header.PageLSN == 0 {
+			return errors.New("paged: dirty page missing wal lsn")
+		}
+		if err := m.wal.Sync(wal.LSN(header.PageLSN)); err != nil {
+			return err
+		}
 	}
 	header.Flags &^= PageFlagDirtyHint
 	header.Checksum = 0

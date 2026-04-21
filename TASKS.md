@@ -217,9 +217,9 @@
 
 - [x] **T-121** — Buffer pool manager (LRU eviction, dirty page tracking) `[serial]` `depends: T-120`
 
-- [ ] **T-122** — Heap file manager (table → set of pages) `[serial]` `depends: T-121`
+- [x] **T-122** — Heap file manager (table → set of pages) `[serial]` `depends: T-121`
 
-- [ ] **T-123** — WAL (write-ahead log): log record format, append, fsync `[serial]` `depends: T-121`
+- [x] **T-123** — WAL (write-ahead log): log record format, append, fsync `[serial]` `depends: T-121`
 
 - [ ] **T-124** — WAL recovery: redo pass on restart `[serial]` `depends: T-123`
 

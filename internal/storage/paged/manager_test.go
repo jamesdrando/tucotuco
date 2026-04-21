@@ -2,7 +2,11 @@ package paged
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"testing"
+
+	"github.com/jamesdrando/tucotuco/internal/wal"
 )
 
 func TestNewPageInitializesHeapHeader(t *testing.T) {
@@ -167,4 +171,110 @@ func TestPageImageEncodingIsStable(t *testing.T) {
 	if !bytes.Equal(page, clone) {
 		t.Fatal("page image should be deterministic")
 	}
+}
+
+func TestFlushSyncsWALBeforeWritingDirtyPage(t *testing.T) {
+	store := newMemoryStore(t, 8192, 2)
+	events := make([]string, 0, 2)
+	store.writeHook = func(pageID PageID, _ []byte) error {
+		events = append(events, fmt.Sprintf("write:%d", pageID))
+		return nil
+	}
+
+	logger := &recordingWAL{
+		onSync: func(lsn wal.LSN) {
+			events = append(events, fmt.Sprintf("sync:%d", lsn))
+		},
+	}
+	mgr, err := newManager(store, 2, logger)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	defer func() {
+		_ = mgr.Close()
+	}()
+
+	page, err := mgr.Fetch(1)
+	if err != nil {
+		t.Fatalf("fetch page: %v", err)
+	}
+	page.Bytes()[pageHeaderSize+2] = 0x5a
+	if err := stampPageLSN(page.Bytes(), wal.LSN(128)); err != nil {
+		t.Fatalf("stamp page lsn: %v", err)
+	}
+	if err := mgr.Unpin(page, true); err != nil {
+		t.Fatalf("unpin page: %v", err)
+	}
+	if err := mgr.Flush(1); err != nil {
+		t.Fatalf("flush page: %v", err)
+	}
+
+	if len(events) != 2 || events[0] != "sync:128" || events[1] != "write:1" {
+		t.Fatalf("event order = %#v, want sync before write", events)
+	}
+	if len(logger.synced) != 1 || logger.synced[0] != wal.LSN(128) {
+		t.Fatalf("synced lsns = %#v, want [128]", logger.synced)
+	}
+
+	persisted, ok := store.pageBytes(1)
+	if !ok {
+		t.Fatal("persisted page missing")
+	}
+	header, err := ValidatePageImage(persisted, 8192, 1)
+	if err != nil {
+		t.Fatalf("validate persisted page: %v", err)
+	}
+	if header.PageLSN != 128 {
+		t.Fatalf("persisted page lsn = %d, want 128", header.PageLSN)
+	}
+}
+
+func TestFlushRetainsDirtyPageWhenWALSyncFails(t *testing.T) {
+	store := newMemoryStore(t, 8192, 2)
+	logger := &recordingWAL{syncErr: errors.New("sync failed")}
+
+	mgr, err := newManager(store, 2, logger)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	defer func() {
+		_ = mgr.Close()
+	}()
+
+	page, err := mgr.Fetch(1)
+	if err != nil {
+		t.Fatalf("fetch page: %v", err)
+	}
+	page.Bytes()[pageHeaderSize+3] = 0x6b
+	if err := stampPageLSN(page.Bytes(), wal.LSN(256)); err != nil {
+		t.Fatalf("stamp page lsn: %v", err)
+	}
+	if err := mgr.Unpin(page, true); err != nil {
+		t.Fatalf("unpin page: %v", err)
+	}
+
+	if err := mgr.Flush(1); err == nil {
+		t.Fatal("expected wal sync failure")
+	}
+	if got := store.writeCount(1); got != 0 {
+		t.Fatalf("write count = %d, want 0", got)
+	}
+	stats := mgr.Stats()
+	if stats.Dirty != 1 {
+		t.Fatalf("dirty frame count = %d, want 1", stats.Dirty)
+	}
+}
+
+type recordingWAL struct {
+	synced  []wal.LSN
+	syncErr error
+	onSync  func(wal.LSN)
+}
+
+func (w *recordingWAL) Sync(lsn wal.LSN) error {
+	if w.onSync != nil {
+		w.onSync(lsn)
+	}
+	w.synced = append(w.synced, lsn)
+	return w.syncErr
 }

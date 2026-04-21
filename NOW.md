@@ -10,52 +10,61 @@
 
 ## CURRENT STATE
 
-**Date:** 2026-04-20
-**Phase:** Phase 1 — Core Engine (In-Memory, SQL-92 Subset)
-**Milestone in progress:** M1
+**Date:** 2026-04-21
+**Phase:** Phase 2 — SQL-92 Full Compliance + Persistent Storage
+**Milestone in progress:** M2
 
 ---
 
 ## JUST DONE
 
-Completed `TASKS.md` T-121 by landing the first concrete buffer-pool layer in `internal/storage/paged/` on top of the T-120 page-layout contract.
+Completed `TASKS.md` T-123 by landing the first file-backed WAL plumbing around `internal/storage/paged/` on top of the T-121 buffer pool and T-122 relation/heap split.
 
-- Added `internal/storage/paged/page.go` with a 64-byte page-header codec, checksum handling, page initialization, and header validation aligned with `docs/storage.md`.
-- Added `internal/storage/paged/store.go` with a `PageStore` abstraction and a file-backed `FileStore` that reserves page `0` for relation metadata and exposes page-level read/write/allocate behavior.
-- Added `internal/storage/paged/manager.go` with a `Manager` buffer pool that implements:
-  - page fetch and new-page allocation
-  - pin/unpin lifecycle
-  - dirty-page tracking
-  - explicit flush / flush-all
-  - LRU eviction over unpinned frames
-  - stale-page protection via internal tokens
-- Added focused tests in `internal/storage/paged/store_test.go` and `internal/storage/paged/manager_test.go` covering page initialization/validation, corruption detection, dirty eviction/writeback, and cache-full pinned-frame behavior.
-- Verified focused validation with a writable Go cache:
-  - `env GOCACHE=/tmp/tucotuco-go-test-t121-focused go test ./internal/storage/paged/...`
+- Added `internal/wal/` record + log primitives with:
+  - monotonic LSN assignment
+  - file-backed append and `Sync(lsn)` fsync barriers
+  - reopen-time record scanning
+  - truncated-tail trimming and corrupt-record rejection
+- Added `internal/storage/paged/wal.go` and wired relation-local WAL emission so:
+  - metadata page `0` and heap-page mutations append full-page-image WAL records
+  - dirty pages get `page_lsn` stamped before they become evictable
+  - relation/update/delete paths keep the relation/heap boundary intact
+- Updated `internal/storage/paged/manager.go` so dirty-page flushes:
+  - require a non-zero `page_lsn` when WAL is enabled
+  - fsync WAL through that LSN before `WritePage`
+  - recompute page checksums after final header bytes are set
+- Preserved the existing public `internal/storage` interfaces; WAL wiring remains internal to `internal/storage/paged/` and `internal/wal/`.
+- Added focused WAL validation in:
+  - `internal/wal/log_test.go`
+  - `internal/storage/paged/manager_test.go`
+  - `internal/storage/paged/relation_test.go`
+  - `internal/storage/paged/wal_test.go`
+- Verified focused validation with writable Go caches:
+  - `env GOCACHE=/tmp/tucotuco-go-test-t123-focused go test ./internal/wal ./internal/storage/paged`
 - Verified repo-wide regression/build coverage:
-  - `env GOCACHE=/tmp/tucotuco-go-test-all-t121 go test ./...`
-  - `env GOCACHE=/tmp/tucotuco-go-build-t121 go build ./...`
+  - `env GOCACHE=/tmp/tucotuco-go-test-t123-all go test ./...`
+  - `env GOCACHE=/tmp/tucotuco-go-build-t123 go build ./...`
 - Lint remains environment-blocked unless a `golangci-lint` entrypoint is restored in this checkout.
-- Marked `TASKS.md` T-121 complete after focused and repo-wide validation passed.
+- Marked `TASKS.md` T-123 complete after focused and repo-wide validation passed.
 
 ---
 
 ## NEXT
 
-**Task(s) to execute:** T-122
+**Task(s) to execute:** T-124
 
 **Instructions for the incoming agent:**
 
 1. Read `AGENTS.md` and `INDEX.md` again before starting the next storage task.
-2. Start **T-122** by building the heap file manager on top of the new paged buffer pool: relation-file layout, table-to-page mapping, page-0 metadata usage, page selection for inserts, and row routing to page/slot handles.
-3. Keep the task boundary sharp: T-122 should consume the buffer pool and page format, but not absorb WAL durability rules from T-123 or MVCC visibility from T-125.
-4. Use `docs/storage.md` and the new `internal/storage/paged/` types as the contract. Prefer adding small internal helpers under `internal/storage/paged/` or a neighboring heap-file package rather than redesigning the buffer-pool API.
-5. Preserve the existing `internal/storage` public interfaces unless the heap-file implementation needs small compatible extensions.
+2. Start **T-124** by adding restart-time WAL scan + redo replay on top of the full-page-image records introduced in `T-123`.
+3. Use the existing page header `page_lsn` as the idempotence guard: redo should skip records whose LSN is not newer than the current page image.
+4. Run recovery before ordinary page validation would reject crash-exposed tail pages or stale on-disk images; the current page allocator can leave a freshly extended page file waiting for redo to materialize its first valid image.
+5. Keep relation correctness independent of WAL hints: relation metadata `InsertHint` and page dirty flags remain advisory and must stay rebuildable from persisted page headers.
 6. Lint remains environment-blocked unless a `golangci-lint` entrypoint is restored in this checkout.
 
 **Spec references:** `SPEC.md` §6, §7, §8, §9, `SPEC_CHANGE [T-097]`
 
-**Estimated parallelism available:** 1 stream (`T-122` is serial)
+**Estimated parallelism available:** 1 stream (`T-124` is serial)
 
 ---
 
@@ -71,7 +80,7 @@ _None._
 |-----------|--------|----------------|
 | M0 — Repo Ready | ✅ Complete | None |
 | M1 — SQL-92 Core | ✅ Complete | None (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-060`, `T-061`, `T-062`, `T-063`, `T-070`, `T-071`, `T-072`, `T-073`, `T-080`, `T-081`, `T-082`, `T-090`, `T-091`, `T-092`, `T-093`, `T-094`, `T-095`, `T-096`, `T-097`, `T-098`, `T-099`, `T-100`, `T-101`, `T-102`, `T-110`, `T-111`, `T-112`, `T-113` complete) |
-| M2 — SQL-92 Full + Storage | 🟨 In progress | T-122 to T-171 (`T-120`, `T-121` complete) |
+| M2 — SQL-92 Full + Storage | 🟨 In progress | T-124 to T-171 (`T-120`, `T-121`, `T-122`, `T-123` complete) |
 | M3 — SQL:1999 | 🔲 Not started | T-200 to T-261 |
 | M4 — SQL:2003 + Wire | 🔲 Not started | T-300 to T-312 |
 | M5 — SQL:2008 | 🔲 Not started | T-350 to T-356 |
@@ -113,3 +122,5 @@ _None._
 | #025 | 2026-04-20 | Codex | Completed T-111 | Expanded `compliance/sql92` to 50+ deterministic cases, fixed validation-driven fixture drift across supported and unsupported paths, passed focused and repo-wide tests/build, closed M1, and advanced the baton to `T-120` |
 | #026 | 2026-04-20 | Codex | Completed T-120 | Replaced the storage stub with a concrete paged-layout design in `docs/storage.md`, aligned the document with the current `RowHandle` API and future MVCC/WAL needs, and advanced the baton to `T-121` |
 | #027 | 2026-04-20 | Codex | Completed T-121 | Added the first `internal/storage/paged` buffer-pool layer with validated page headers, file-backed page storage, LRU-managed frames, focused paged-storage tests, and repo-wide green validation, then advanced the baton to `T-122` |
+| #028 | 2026-04-21 | Codex | Completed T-122 | Added the first relation-local heap file manager in `internal/storage/paged` with page-0 metadata, per-table relation files, schema-driven tuple encoding, handle routing, focused relation tests, and repo-wide green validation, then advanced the baton to `T-123` |
+| #029 | 2026-04-21 | Codex | Completed T-123 | Added the first file-backed WAL layer in `internal/wal` plus paged-storage WAL emission, page-LSN stamping, WAL-before-page-flush ordering, focused WAL/paged tests, and repo-wide green validation, then advanced the baton to `T-124` |
