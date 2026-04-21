@@ -2,6 +2,7 @@ package wal
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -182,5 +183,113 @@ func TestOpenRejectsCorruptRecordChecksum(t *testing.T) {
 
 	if _, err := Open(path); err == nil {
 		t.Fatal("expected reopen failure for corrupt wal")
+	}
+}
+
+func TestLogScanFromVisitsRedoRangeInOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.wal")
+
+	log, err := Open(path)
+	if err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+
+	records := []Record{
+		{
+			Type:     RecordTypePageImage,
+			Resource: "public_items.heap",
+			PageID:   0,
+			Payload:  bytes.Repeat([]byte{0x10}, 64),
+		},
+		{
+			Type:     RecordTypePageImage,
+			Resource: "public_items.heap",
+			PageID:   1,
+			Payload:  bytes.Repeat([]byte{0x20}, 64),
+		},
+		{
+			Type:     RecordTypePageImage,
+			Resource: "public_items.heap",
+			PageID:   2,
+			Payload:  bytes.Repeat([]byte{0x30}, 64),
+		},
+	}
+
+	lsns := make([]LSN, 0, len(records))
+	for _, record := range records {
+		lsn, err := log.Append(record)
+		if err != nil {
+			t.Fatalf("append record: %v", err)
+		}
+		lsns = append(lsns, lsn)
+	}
+	if err := log.Sync(lsns[len(lsns)-1]); err != nil {
+		t.Fatalf("sync wal: %v", err)
+	}
+
+	var scanned []PersistedRecord
+	if err := log.ScanFrom(lsns[1], func(record PersistedRecord) error {
+		scanned = append(scanned, record)
+		return nil
+	}); err != nil {
+		t.Fatalf("scan from redo lsn: %v", err)
+	}
+
+	if len(scanned) != 2 {
+		t.Fatalf("scanned count = %d, want 2", len(scanned))
+	}
+	if scanned[0].LSN != lsns[1] || scanned[1].LSN != lsns[2] {
+		t.Fatalf("scanned lsns = %#v, want [%d %d]", scanned, lsns[1], lsns[2])
+	}
+	if scanned[0].PageID != records[1].PageID || scanned[1].PageID != records[2].PageID {
+		t.Fatalf("scanned records = %#v", scanned)
+	}
+
+	filtered, err := log.RecordsFrom(lsns[2])
+	if err != nil {
+		t.Fatalf("records from redo lsn: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].LSN != lsns[2] {
+		t.Fatalf("filtered records = %#v, want final LSN %d", filtered, lsns[2])
+	}
+}
+
+func TestLogScanFromPropagatesVisitorError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.wal")
+
+	log, err := Open(path)
+	if err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+
+	firstLSN, err := log.Append(Record{
+		Type:     RecordTypePageImage,
+		Resource: "public_items.heap",
+		PageID:   0,
+		Payload:  bytes.Repeat([]byte{0x10}, 64),
+	})
+	if err != nil {
+		t.Fatalf("append first record: %v", err)
+	}
+	if _, err := log.Append(Record{
+		Type:     RecordTypePageImage,
+		Resource: "public_items.heap",
+		PageID:   1,
+		Payload:  bytes.Repeat([]byte{0x20}, 64),
+	}); err != nil {
+		t.Fatalf("append second record: %v", err)
+	}
+
+	wantErr := errors.New("stop redo")
+	visited := 0
+	err = log.ScanFrom(firstLSN, func(PersistedRecord) error {
+		visited++
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("scan error = %v, want %v", err, wantErr)
+	}
+	if visited != 1 {
+		t.Fatalf("visited count = %d, want 1", visited)
 	}
 }

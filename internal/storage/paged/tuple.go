@@ -3,7 +3,6 @@ package paged
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -17,6 +16,10 @@ import (
 const (
 	tupleVersion    uint16 = 1
 	tupleHeaderSize        = 44
+
+	forwardPtrSlotBits = 16
+	forwardPtrSlotMask = (1 << forwardPtrSlotBits) - 1
+	forwardPtrPageMask = ^uint64(forwardPtrSlotMask)
 )
 
 // Tuple flags reserve space for later MVCC and redirect semantics.
@@ -35,6 +38,18 @@ type tupleHeader struct {
 	Xmax       uint64
 	ForwardPtr uint64
 	Reserved   uint64
+}
+
+func (h tupleHeader) visible() bool {
+	return h.Flags == tupleFlagLive && h.Xmax == 0 && h.ForwardPtr == 0
+}
+
+func (h tupleHeader) replacement() bool {
+	return h.Flags == tupleFlagDeleted && h.Xmax != 0 && h.ForwardPtr != 0
+}
+
+func (h tupleHeader) deleted() bool {
+	return h.Flags == tupleFlagDeleted && h.Xmax != 0 && h.ForwardPtr == 0
 }
 
 func decodeTupleHeader(tuple []byte) (tupleHeader, error) {
@@ -70,7 +85,7 @@ func encodeTupleHeader(dst []byte, header tupleHeader) error {
 	return nil
 }
 
-func encodeRowTuple(desc *catalog.TableDescriptor, row storage.Row) ([]byte, error) {
+func encodeRowTuple(desc *catalog.TableDescriptor, row storage.Row, xmin uint64) ([]byte, error) {
 	if desc == nil || !desc.ID.Valid() {
 		return nil, ErrInvalidRelation
 	}
@@ -119,6 +134,7 @@ func encodeRowTuple(desc *catalog.TableDescriptor, row storage.Row) ([]byte, err
 		Flags:      tupleFlagLive,
 		PayloadLen: uint32(len(body)),
 		NullmapLen: uint32(nullmapLen),
+		Xmin:       xmin,
 	}
 	if err := encodeTupleHeader(tuple, header); err != nil {
 		return nil, err
@@ -128,32 +144,44 @@ func encodeRowTuple(desc *catalog.TableDescriptor, row storage.Row) ([]byte, err
 }
 
 func decodeRowTuple(desc *catalog.TableDescriptor, tuple []byte) (storage.Row, error) {
+	header, row, err := decodeStoredRowTuple(desc, tuple)
+	if err != nil {
+		return storage.Row{}, err
+	}
+	if !header.visible() {
+		return storage.Row{}, ErrRowNotFound
+	}
+	return row, nil
+}
+
+func decodeStoredRowTuple(desc *catalog.TableDescriptor, tuple []byte) (tupleHeader, storage.Row, error) {
 	if desc == nil || !desc.ID.Valid() {
-		return storage.Row{}, ErrInvalidRelation
+		return tupleHeader{}, storage.Row{}, ErrInvalidRelation
 	}
 
 	header, err := decodeTupleHeader(tuple)
 	if err != nil {
-		return storage.Row{}, err
+		return tupleHeader{}, storage.Row{}, err
 	}
 	if header.Version != tupleVersion {
-		return storage.Row{}, fmt.Errorf("paged: unsupported tuple version %d", header.Version)
+		return tupleHeader{}, storage.Row{}, fmt.Errorf("paged: unsupported tuple version %d", header.Version)
 	}
-	if header.Flags&tupleFlagDeleted != 0 {
-		return storage.Row{}, ErrRowNotFound
-	}
-	if header.Flags&tupleFlagRedirected != 0 {
-		return storage.Row{}, errors.New("paged: redirected tuple payload cannot be decoded directly")
+	if header.Flags != tupleFlagLive && header.Flags != tupleFlagDeleted && header.Flags != tupleFlagRedirected {
+		return tupleHeader{}, storage.Row{}, fmt.Errorf("paged: unsupported tuple flags 0x%x", header.Flags)
 	}
 
 	totalLen := tupleHeaderSize + int(header.PayloadLen)
 	if len(tuple) < totalLen {
-		return storage.Row{}, fmt.Errorf("paged: tuple payload truncated: have %d want %d", len(tuple), totalLen)
+		return tupleHeader{}, storage.Row{}, fmt.Errorf("paged: tuple payload truncated: have %d want %d", len(tuple), totalLen)
 	}
 
 	body := tuple[tupleHeaderSize:totalLen]
 	if int(header.NullmapLen) > len(body) {
-		return storage.Row{}, fmt.Errorf("paged: null bitmap length %d exceeds tuple payload %d", header.NullmapLen, len(body))
+		return tupleHeader{}, storage.Row{}, fmt.Errorf(
+			"paged: null bitmap length %d exceeds tuple payload %d",
+			header.NullmapLen,
+			len(body),
+		)
 	}
 
 	nullmap := body[:header.NullmapLen]
@@ -174,17 +202,46 @@ func decodeRowTuple(desc *catalog.TableDescriptor, tuple []byte) (storage.Row, e
 
 		value, consumed, err := decodeColumnValue(column.Type, payload[offset:])
 		if err != nil {
-			return storage.Row{}, fmt.Errorf("paged: decode column %q: %w", column.Name, err)
+			return tupleHeader{}, storage.Row{}, fmt.Errorf("paged: decode column %q: %w", column.Name, err)
 		}
 		offset += consumed
 		values[index] = value
 	}
 
 	if offset != len(payload) {
-		return storage.Row{}, fmt.Errorf("paged: tuple payload has %d trailing bytes", len(payload)-offset)
+		return tupleHeader{}, storage.Row{}, fmt.Errorf("paged: tuple payload has %d trailing bytes", len(payload)-offset)
 	}
 
-	return storage.NewRow(values...), nil
+	return header, storage.NewRow(values...), nil
+}
+
+func encodeForwardPtr(handle storage.RowHandle) (uint64, error) {
+	if !handle.Valid() || handle.Page == 0 {
+		return 0, ErrRowNotFound
+	}
+	if handle.Page > forwardPtrPageMask>>forwardPtrSlotBits {
+		return 0, fmt.Errorf("paged: row handle page %d exceeds packed forward pointer", handle.Page)
+	}
+	if handle.Slot > forwardPtrSlotMask {
+		return 0, fmt.Errorf("paged: row handle slot %d exceeds packed forward pointer", handle.Slot)
+	}
+
+	return (handle.Page << forwardPtrSlotBits) | handle.Slot, nil
+}
+
+func decodeForwardPtr(ptr uint64) (storage.RowHandle, error) {
+	if ptr == 0 {
+		return storage.RowHandle{}, ErrRowNotFound
+	}
+
+	handle := storage.RowHandle{
+		Page: ptr >> forwardPtrSlotBits,
+		Slot: ptr & forwardPtrSlotMask,
+	}
+	if !handle.Valid() || handle.Page == 0 {
+		return storage.RowHandle{}, fmt.Errorf("paged: invalid packed forward pointer 0x%x", ptr)
+	}
+	return handle, nil
 }
 
 func encodeColumnValue(desc types.TypeDesc, value types.Value) ([]byte, error) {

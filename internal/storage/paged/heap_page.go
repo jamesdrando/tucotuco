@@ -218,6 +218,54 @@ func (p *heapPage) rewriteTuple(slotIndex uint64, tuple []byte) error {
 	return p.flushHeader()
 }
 
+func (p *heapPage) endTupleVersion(slotIndex uint64, version uint64, successor storage.RowHandle) error {
+	if p == nil {
+		return ErrInvalidRelation
+	}
+	if err := p.syncHeader(); err != nil {
+		return err
+	}
+
+	slot, err := p.readSlot(slotIndex)
+	if err != nil {
+		return err
+	}
+	switch slot.Flags {
+	case slotFlagLive:
+	case slotFlagDead, slotFlagUnused:
+		return ErrRowNotFound
+	case slotFlagRedirect:
+		return errors.New("paged: cannot end redirect slot version")
+	default:
+		return fmt.Errorf("paged: page %d slot %d has invalid flags 0x%x", p.page.ID(), slotIndex, slot.Flags)
+	}
+
+	start, end, err := p.payloadBounds(slot)
+	if err != nil {
+		return err
+	}
+	header, err := decodeTupleHeader(p.page.data[start:end])
+	if err != nil {
+		return err
+	}
+	if !header.visible() {
+		return ErrRowNotFound
+	}
+
+	header.Flags = tupleFlagDeleted
+	header.Xmax = version
+	header.ForwardPtr = 0
+	if successor.Valid() {
+		packed, err := encodeForwardPtr(successor)
+		if err != nil {
+			return err
+		}
+		header.ForwardPtr = packed
+	}
+
+	return encodeTupleHeader(p.page.data[start:start+tupleHeaderSize], header)
+}
+
 func (p *heapPage) installRedirect(slotIndex uint64, target storage.RowHandle) error {
 	if p == nil {
 		return ErrInvalidRelation
@@ -285,17 +333,67 @@ func (p *heapPage) markDead(slotIndex uint64) error {
 	}
 
 	if slot.Flags == slotFlagLive {
-		start, _, boundsErr := p.payloadBounds(slot)
-		if boundsErr != nil {
-			return boundsErr
+		start, end, err := p.payloadBounds(slot)
+		if err != nil {
+			return err
 		}
-		if start+tupleHeaderSize <= len(p.page.data) {
-			header, decodeErr := decodeTupleHeader(p.page.data[start : start+int(slot.Length)])
-			if decodeErr == nil {
-				header.Flags |= tupleFlagDeleted
-				_ = encodeTupleHeader(p.page.data[start:], header)
-			}
+		header, err := decodeTupleHeader(p.page.data[start:end])
+		if err != nil {
+			return err
 		}
+		if !header.visible() {
+			return ErrRowNotFound
+		}
+		header.Flags = tupleFlagDeleted
+		header.ForwardPtr = 0
+		if err := encodeTupleHeader(p.page.data[start:start+tupleHeaderSize], header); err != nil {
+			return err
+		}
+	}
+
+	slot.Flags = slotFlagDead
+	p.writeSlot(uint16(slotIndex), slot)
+	p.noteDeadBytes(int(slot.Length))
+	return p.flushHeader()
+}
+
+func (p *heapPage) markTerminal(slotIndex uint64, version uint64) error {
+	if p == nil || version == 0 {
+		return ErrInvalidRelation
+	}
+	if err := p.syncHeader(); err != nil {
+		return err
+	}
+
+	slot, err := p.readSlot(slotIndex)
+	if err != nil {
+		return err
+	}
+	switch slot.Flags {
+	case slotFlagLive:
+	case slotFlagDead, slotFlagUnused, slotFlagRedirect:
+		return ErrRowNotFound
+	default:
+		return fmt.Errorf("paged: page %d slot %d has invalid flags 0x%x", p.page.ID(), slotIndex, slot.Flags)
+	}
+
+	start, end, err := p.payloadBounds(slot)
+	if err != nil {
+		return err
+	}
+	header, err := decodeTupleHeader(p.page.data[start:end])
+	if err != nil {
+		return err
+	}
+	if !header.visible() {
+		return ErrRowNotFound
+	}
+
+	header.Flags = tupleFlagDeleted
+	header.Xmax = version
+	header.ForwardPtr = 0
+	if err := encodeTupleHeader(p.page.data[start:start+tupleHeaderSize], header); err != nil {
+		return err
 	}
 
 	slot.Flags = slotFlagDead

@@ -66,6 +66,15 @@ func TestRelationUpdatePreservesHandleThroughRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert row: %v", err)
 	}
+	rootPageID := PageID(handle.Page)
+	inserted := readHeapPageTupleSnapshot(t, relation, rootPageID, handle.Slot)
+	assertTupleVersionState(t, "inserted version", inserted, tupleVersionExpectation{
+		allowedSlotFlags: []uint16{slotFlagLive},
+		xmin:             expectPresent,
+		xmax:             expectAbsent,
+		forwardPtr:       expectAbsent,
+		deletedFlag:      expectAbsent,
+	})
 
 	want := pagedTestRow(1, strings.Repeat("z", 96))
 	if err := relation.Update(handle, want); err != nil {
@@ -91,9 +100,22 @@ func TestRelationUpdatePreservesHandleThroughRedirect(t *testing.T) {
 	if slot.Flags != slotFlagRedirect {
 		t.Fatalf("root slot flags = 0x%x, want redirect", slot.Flags)
 	}
+
+	replacement := assertHeapPageRedirect(t, relation, rootPageID, handle.Slot)
+	replacementSnapshot := readHeapPageTupleSnapshot(t, relation, PageID(replacement.Page), replacement.Slot)
+	assertTupleVersionState(t, "replacement version", replacementSnapshot, tupleVersionExpectation{
+		allowedSlotFlags: []uint16{slotFlagLive},
+		xmin:             expectPresent,
+		xmax:             expectAbsent,
+		forwardPtr:       expectAbsent,
+		deletedFlag:      expectAbsent,
+	})
+	if replacementSnapshot.header.Xmin == inserted.header.Xmin {
+		t.Fatalf("replacement xmin = %d, want distinct non-zero value from inserted xmin %d", replacementSnapshot.header.Xmin, inserted.header.Xmin)
+	}
 }
 
-func TestRelationDeleteRemovesRedirectedHandle(t *testing.T) {
+func TestRelationDeleteMarksReplacementVersionTerminal(t *testing.T) {
 	root := t.TempDir()
 	manager, err := OpenHeapManager(root, 256, 2)
 	if err != nil {
@@ -119,10 +141,38 @@ func TestRelationDeleteRemovesRedirectedHandle(t *testing.T) {
 	if err := relation.Update(handle, pagedTestRow(1, strings.Repeat("q", 96))); err != nil {
 		t.Fatalf("update row: %v", err)
 	}
+	rootPageID := PageID(handle.Page)
+	replacement := assertHeapPageRedirect(t, relation, rootPageID, handle.Slot)
+	liveReplacement := readHeapPageTupleSnapshot(t, relation, PageID(replacement.Page), replacement.Slot)
+	assertTupleVersionState(t, "live replacement version", liveReplacement, tupleVersionExpectation{
+		allowedSlotFlags: []uint16{slotFlagLive},
+		xmin:             expectPresent,
+		xmax:             expectAbsent,
+		forwardPtr:       expectAbsent,
+		deletedFlag:      expectAbsent,
+	})
+
 	if err := relation.Delete(handle); err != nil {
 		t.Fatalf("delete row: %v", err)
 	}
 	if _, err := relation.Lookup(handle); !errors.Is(err, ErrRowNotFound) {
 		t.Fatalf("lookup deleted row error = %v, want %v", err, ErrRowNotFound)
+	}
+
+	rootSlot := readHeapPageSlot(t, relation, rootPageID, handle.Slot)
+	if rootSlot.Flags != slotFlagRedirect && rootSlot.Flags != slotFlagDead {
+		t.Fatalf("root slot flags after delete = 0x%x, want redirect or dead", rootSlot.Flags)
+	}
+
+	deletedReplacement := readHeapPageTupleSnapshot(t, relation, PageID(replacement.Page), replacement.Slot)
+	assertTupleVersionState(t, "deleted replacement version", deletedReplacement, tupleVersionExpectation{
+		allowedSlotFlags: []uint16{slotFlagLive, slotFlagDead},
+		xmin:             expectPresent,
+		xmax:             expectPresent,
+		forwardPtr:       expectAbsent,
+		deletedFlag:      expectPresent,
+	})
+	if deletedReplacement.header.Xmin != liveReplacement.header.Xmin {
+		t.Fatalf("deleted replacement xmin = %d, want live replacement xmin %d", deletedReplacement.header.Xmin, liveReplacement.header.Xmin)
 	}
 }

@@ -221,9 +221,9 @@
 
 - [x] **T-123** — WAL (write-ahead log): log record format, append, fsync `[serial]` `depends: T-121`
 
-- [ ] **T-124** — WAL recovery: redo pass on restart `[serial]` `depends: T-123`
+- [x] **T-124** — WAL recovery: redo pass on restart `[serial]` `depends: T-123`
 
-- [ ] **T-125** — MVCC row versioning (xmin/xmax per tuple) `[serial]` `depends: T-122,T-124`
+- [x] **T-125** — MVCC row versioning (xmin/xmax per tuple) `[serial]` `depends: T-122,T-124`
 
 - [ ] **T-126** — Transaction manager: begin/commit/rollback with MVCC `[serial]` `depends: T-125`
 

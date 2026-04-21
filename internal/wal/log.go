@@ -125,6 +125,11 @@ func (l *Log) DurableLSN() LSN {
 
 // Records decodes every persisted WAL record in order.
 func (l *Log) Records() ([]PersistedRecord, error) {
+	return l.RecordsFrom(0)
+}
+
+// RecordsFrom decodes persisted WAL records whose LSN is at or after start.
+func (l *Log) RecordsFrom(start LSN) ([]PersistedRecord, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -134,6 +139,9 @@ func (l *Log) Records() ([]PersistedRecord, error) {
 
 	var records []PersistedRecord
 	_, _, err := l.scanLocked(false, func(record PersistedRecord) error {
+		if record.LSN < start {
+			return nil
+		}
 		records = append(records, record)
 		return nil
 	})
@@ -141,6 +149,27 @@ func (l *Log) Records() ([]PersistedRecord, error) {
 		return nil, err
 	}
 	return records, nil
+}
+
+// ScanFrom visits persisted WAL records in order whose LSN is at or after start.
+func (l *Log) ScanFrom(start LSN, visitor func(PersistedRecord) error) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if err := l.ensureOpen(); err != nil {
+		return err
+	}
+	if visitor == nil {
+		return ErrInvalidRecord
+	}
+
+	_, _, err := l.scanLocked(false, func(record PersistedRecord) error {
+		if record.LSN < start {
+			return nil
+		}
+		return visitor(record)
+	})
+	return err
 }
 
 // Close closes the WAL file.

@@ -1,6 +1,7 @@
 package paged
 
 import (
+	"encoding/binary"
 	"errors"
 	"strings"
 	"testing"
@@ -309,7 +310,7 @@ func TestRelationLookupRoutesPageAndSlotHandle(t *testing.T) {
 	}
 }
 
-func TestRelationUpdateRewritesInPlaceAndDeleteMarksRowDead(t *testing.T) {
+func TestRelationDeleteMarksCurrentVersionTerminal(t *testing.T) {
 	root := t.TempDir()
 	manager, err := OpenHeapManager(root, 512, 4)
 	if err != nil {
@@ -333,21 +334,15 @@ func TestRelationUpdateRewritesInPlaceAndDeleteMarksRowDead(t *testing.T) {
 		t.Fatalf("insert row: %v", err)
 	}
 
-	updated := pagedTestRow(1, "beta")
-	if err := relation.Update(handle, updated); err != nil {
-		t.Fatalf("update row: %v", err)
-	}
-
-	got, err := relation.Lookup(handle)
-	if err != nil {
-		t.Fatalf("lookup updated row: %v", err)
-	}
-	assertStorageRowEqual(t, got, updated)
-
-	slot := readHeapPageSlot(t, relation, 1, 0)
-	if slot.Flags != slotFlagLive {
-		t.Fatalf("slot flags after in-place update = 0x%x, want live", slot.Flags)
-	}
+	rootPageID := PageID(handle.Page)
+	inserted := readHeapPageTupleSnapshot(t, relation, rootPageID, handle.Slot)
+	assertTupleVersionState(t, "inserted current version", inserted, tupleVersionExpectation{
+		allowedSlotFlags: []uint16{slotFlagLive},
+		xmin:             expectPresent,
+		xmax:             expectAbsent,
+		forwardPtr:       expectAbsent,
+		deletedFlag:      expectAbsent,
+	})
 
 	if err := relation.Delete(handle); err != nil {
 		t.Fatalf("delete row: %v", err)
@@ -356,9 +351,16 @@ func TestRelationUpdateRewritesInPlaceAndDeleteMarksRowDead(t *testing.T) {
 		t.Fatalf("lookup deleted row error = %v, want %v", err, ErrRowNotFound)
 	}
 
-	slot = readHeapPageSlot(t, relation, 1, 0)
-	if slot.Flags != slotFlagDead {
-		t.Fatalf("slot flags after delete = 0x%x, want dead", slot.Flags)
+	deleted := readHeapPageTupleSnapshot(t, relation, rootPageID, handle.Slot)
+	assertTupleVersionState(t, "deleted current version", deleted, tupleVersionExpectation{
+		allowedSlotFlags: []uint16{slotFlagLive, slotFlagDead},
+		xmin:             expectPresent,
+		xmax:             expectPresent,
+		forwardPtr:       expectAbsent,
+		deletedFlag:      expectPresent,
+	})
+	if deleted.header.Xmin != inserted.header.Xmin {
+		t.Fatalf("deleted xmin = %d, want inserted xmin %d", deleted.header.Xmin, inserted.header.Xmin)
 	}
 }
 
@@ -385,6 +387,15 @@ func TestRelationUpdateRewritesRedirectTargetWithoutGrowingChains(t *testing.T) 
 	if err != nil {
 		t.Fatalf("insert root row: %v", err)
 	}
+	rootPageID := PageID(handle.Page)
+	inserted := readHeapPageTupleSnapshot(t, relation, rootPageID, handle.Slot)
+	assertTupleVersionState(t, "inserted root version", inserted, tupleVersionExpectation{
+		allowedSlotFlags: []uint16{slotFlagLive},
+		xmin:             expectPresent,
+		xmax:             expectAbsent,
+		forwardPtr:       expectAbsent,
+		deletedFlag:      expectAbsent,
+	})
 	if _, err := relation.Insert(pagedTestRow(2, "pad")); err != nil {
 		t.Fatalf("insert filler row: %v", err)
 	}
@@ -394,9 +405,20 @@ func TestRelationUpdateRewritesRedirectTargetWithoutGrowingChains(t *testing.T) 
 		t.Fatalf("first redirecting update: %v", err)
 	}
 
-	firstRedirect := assertHeapPageRedirect(t, relation, 1, 0)
-	if firstRedirect != (storage.RowHandle{Page: 1, Slot: 2}) {
-		t.Fatalf("first redirect handle = %#v, want page 1 slot 2", firstRedirect)
+	firstRedirect := assertHeapPageRedirect(t, relation, rootPageID, handle.Slot)
+	if firstRedirect == handle {
+		t.Fatalf("first redirect handle = %#v, want a distinct replacement handle", firstRedirect)
+	}
+	firstReplacement := readHeapPageTupleSnapshot(t, relation, PageID(firstRedirect.Page), firstRedirect.Slot)
+	assertTupleVersionState(t, "first replacement version", firstReplacement, tupleVersionExpectation{
+		allowedSlotFlags: []uint16{slotFlagLive},
+		xmin:             expectPresent,
+		xmax:             expectAbsent,
+		forwardPtr:       expectAbsent,
+		deletedFlag:      expectAbsent,
+	})
+	if firstReplacement.header.Xmin == inserted.header.Xmin {
+		t.Fatalf("first replacement xmin = %d, want distinct non-zero value from inserted xmin %d", firstReplacement.header.Xmin, inserted.header.Xmin)
 	}
 	firstRoutedRow, err := relation.Lookup(handle)
 	if err != nil {
@@ -409,13 +431,28 @@ func TestRelationUpdateRewritesRedirectTargetWithoutGrowingChains(t *testing.T) 
 		t.Fatalf("second redirecting update: %v", err)
 	}
 
-	secondRedirect := assertHeapPageRedirect(t, relation, 1, 0)
-	if secondRedirect != (storage.RowHandle{Page: 2, Slot: 0}) {
-		t.Fatalf("second redirect handle = %#v, want page 2 slot 0", secondRedirect)
+	secondRedirect := assertHeapPageRedirect(t, relation, rootPageID, handle.Slot)
+	if secondRedirect == handle || secondRedirect == firstRedirect {
+		t.Fatalf("second redirect handle = %#v, want a distinct one-hop replacement", secondRedirect)
 	}
-	intermediate := readHeapPageSlot(t, relation, 1, 2)
-	if intermediate.Flags != slotFlagDead {
-		t.Fatalf("intermediate slot flags = 0x%x, want dead", intermediate.Flags)
+	intermediate := readHeapPageTupleSnapshot(t, relation, PageID(firstRedirect.Page), firstRedirect.Slot)
+	assertTupleVersionState(t, "intermediate superseded version", intermediate, tupleVersionExpectation{
+		allowedSlotFlags: []uint16{slotFlagLive, slotFlagDead},
+		xmin:             expectPresent,
+		xmax:             expectPresent,
+		forwardPtr:       expectPresent,
+		deletedFlag:      expectEither,
+	})
+	secondReplacement := readHeapPageTupleSnapshot(t, relation, PageID(secondRedirect.Page), secondRedirect.Slot)
+	assertTupleVersionState(t, "second replacement version", secondReplacement, tupleVersionExpectation{
+		allowedSlotFlags: []uint16{slotFlagLive},
+		xmin:             expectPresent,
+		xmax:             expectAbsent,
+		forwardPtr:       expectAbsent,
+		deletedFlag:      expectAbsent,
+	})
+	if secondReplacement.header.Xmin == firstReplacement.header.Xmin {
+		t.Fatalf("second replacement xmin = %d, want distinct non-zero value from first replacement xmin %d", secondReplacement.header.Xmin, firstReplacement.header.Xmin)
 	}
 
 	secondRoutedRow, err := relation.Lookup(handle)
@@ -431,13 +468,20 @@ func TestRelationUpdateRewritesRedirectTargetWithoutGrowingChains(t *testing.T) 
 		t.Fatalf("lookup deleted redirected row error = %v, want %v", err, ErrRowNotFound)
 	}
 
-	rootSlot := readHeapPageSlot(t, relation, 1, 0)
-	if rootSlot.Flags != slotFlagDead {
-		t.Fatalf("root redirect slot flags after delete = 0x%x, want dead", rootSlot.Flags)
+	rootSlot := readHeapPageSlot(t, relation, rootPageID, handle.Slot)
+	if rootSlot.Flags != slotFlagRedirect && rootSlot.Flags != slotFlagDead {
+		t.Fatalf("root redirect slot flags after delete = 0x%x, want redirect or dead", rootSlot.Flags)
 	}
-	targetSlot := readHeapPageSlot(t, relation, 2, 0)
-	if targetSlot.Flags != slotFlagDead {
-		t.Fatalf("redirect target slot flags after delete = 0x%x, want dead", targetSlot.Flags)
+	deletedReplacement := readHeapPageTupleSnapshot(t, relation, PageID(secondRedirect.Page), secondRedirect.Slot)
+	assertTupleVersionState(t, "deleted replacement version", deletedReplacement, tupleVersionExpectation{
+		allowedSlotFlags: []uint16{slotFlagLive, slotFlagDead},
+		xmin:             expectPresent,
+		xmax:             expectPresent,
+		forwardPtr:       expectAbsent,
+		deletedFlag:      expectPresent,
+	})
+	if deletedReplacement.header.Xmin != secondReplacement.header.Xmin {
+		t.Fatalf("deleted replacement xmin = %d, want live replacement xmin %d", deletedReplacement.header.Xmin, secondReplacement.header.Xmin)
 	}
 }
 
@@ -647,6 +691,179 @@ func readHeapPageSlot(t *testing.T, relation *Relation, pageID PageID, slotIndex
 		t.Fatalf("read page %d slot %d: %v", pageID, slotIndex, err)
 	}
 	return slot
+}
+
+type tupleVersionSnapshot struct {
+	slot   slotEntry
+	header tupleHeader
+}
+
+type presenceExpectation uint8
+
+const (
+	expectEither presenceExpectation = iota
+	expectAbsent
+	expectPresent
+)
+
+type tupleVersionExpectation struct {
+	allowedSlotFlags []uint16
+	xmin             presenceExpectation
+	xmax             presenceExpectation
+	forwardPtr       presenceExpectation
+	deletedFlag      presenceExpectation
+}
+
+func readHeapPageTupleSnapshot(t *testing.T, relation *Relation, pageID PageID, slotIndex uint64) tupleVersionSnapshot {
+	t.Helper()
+
+	page, err := relation.manager.Fetch(pageID)
+	if err != nil {
+		t.Fatalf("fetch page %d: %v", pageID, err)
+	}
+	defer func() {
+		_ = relation.manager.Unpin(page, false)
+	}()
+
+	slot, payload := readCachedPageSlotPayload(t, page, slotIndex)
+	return decodeTupleSnapshotFromPayload(t, pageID, slotIndex, slot, payload)
+}
+
+func readPageImageTupleSnapshot(t *testing.T, page []byte, pageID PageID, slotIndex uint64) tupleVersionSnapshot {
+	t.Helper()
+
+	slot, payload := readPageImageSlotPayload(t, page, pageID, slotIndex)
+	return decodeTupleSnapshotFromPayload(t, pageID, slotIndex, slot, payload)
+}
+
+func decodeTupleSnapshotFromPayload(
+	t *testing.T,
+	pageID PageID,
+	slotIndex uint64,
+	slot slotEntry,
+	payload []byte,
+) tupleVersionSnapshot {
+	t.Helper()
+
+	if len(payload) < tupleHeaderSize {
+		t.Fatalf("page %d slot %d payload length = %d, want at least tuple header size %d", pageID, slotIndex, len(payload), tupleHeaderSize)
+	}
+	header, err := decodeTupleHeader(payload)
+	if err != nil {
+		t.Fatalf("decode tuple header page %d slot %d: %v", pageID, slotIndex, err)
+	}
+	return tupleVersionSnapshot{slot: slot, header: header}
+}
+
+func readCachedPageSlotPayload(t *testing.T, page *Page, slotIndex uint64) (slotEntry, []byte) {
+	t.Helper()
+
+	header, err := page.Header()
+	if err != nil {
+		t.Fatalf("decode cached page %d header: %v", page.ID(), err)
+	}
+	if slotIndex >= uint64(header.SlotCount) {
+		t.Fatalf("page %d slot %d missing: slot count %d", page.ID(), slotIndex, header.SlotCount)
+	}
+
+	offset := pageHeaderSize + int(slotIndex)*pageSlotSize
+	raw := page.data[offset : offset+pageSlotSize]
+	slot := slotEntry{
+		Offset:     binary.LittleEndian.Uint16(raw[0:2]),
+		Length:     binary.LittleEndian.Uint16(raw[2:4]),
+		Flags:      binary.LittleEndian.Uint16(raw[4:6]),
+		Generation: binary.LittleEndian.Uint16(raw[6:8]),
+	}
+
+	start := int(slot.Offset)
+	end := start + int(slot.Length)
+	if slot.Length == 0 || start < pageHeaderSize || end > len(page.data) {
+		t.Fatalf("page %d slot %d payload bounds [%d,%d) outside page size %d", page.ID(), slotIndex, start, end, len(page.data))
+	}
+
+	return slot, page.data[start:end]
+}
+
+func readPageImageSlotPayload(t *testing.T, page []byte, pageID PageID, slotIndex uint64) (slotEntry, []byte) {
+	t.Helper()
+
+	header, err := ValidatePageImage(page, len(page), pageID)
+	if err != nil {
+		t.Fatalf("validate page %d image: %v", pageID, err)
+	}
+	if slotIndex >= uint64(header.SlotCount) {
+		t.Fatalf("page %d slot %d missing: slot count %d", pageID, slotIndex, header.SlotCount)
+	}
+
+	offset := pageHeaderSize + int(slotIndex)*pageSlotSize
+	raw := page[offset : offset+pageSlotSize]
+	slot := slotEntry{
+		Offset:     binary.LittleEndian.Uint16(raw[0:2]),
+		Length:     binary.LittleEndian.Uint16(raw[2:4]),
+		Flags:      binary.LittleEndian.Uint16(raw[4:6]),
+		Generation: binary.LittleEndian.Uint16(raw[6:8]),
+	}
+
+	start := int(slot.Offset)
+	end := start + int(slot.Length)
+	if slot.Length == 0 || start < pageHeaderSize || end > len(page) {
+		t.Fatalf("page %d slot %d payload bounds [%d,%d) outside page size %d", pageID, slotIndex, start, end, len(page))
+	}
+
+	return slot, page[start:end]
+}
+
+// T-125 keeps versioning local to paged storage for now, so the tests only
+// require non-zero version markers and terminal-vs-live state, not a full
+// transaction-state model.
+func assertTupleVersionState(t *testing.T, name string, snapshot tupleVersionSnapshot, want tupleVersionExpectation) {
+	t.Helper()
+
+	if len(want.allowedSlotFlags) != 0 {
+		matched := false
+		for _, flag := range want.allowedSlotFlags {
+			if snapshot.slot.Flags == flag {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Fatalf("%s slot flags = 0x%x, want one of %#v", name, snapshot.slot.Flags, want.allowedSlotFlags)
+		}
+	}
+	if snapshot.header.Version != tupleVersion {
+		t.Fatalf("%s tuple version = %d, want %d", name, snapshot.header.Version, tupleVersion)
+	}
+	assertPresence(t, name, "xmin", snapshot.header.Xmin != 0, snapshot.header.Xmin, want.xmin)
+	assertPresence(t, name, "xmax", snapshot.header.Xmax != 0, snapshot.header.Xmax, want.xmax)
+	assertPresence(t, name, "forward pointer", snapshot.header.ForwardPtr != 0, snapshot.header.ForwardPtr, want.forwardPtr)
+	assertPresence(t, name, "deleted flag", snapshot.header.Flags&tupleFlagDeleted != 0, uint64(snapshot.header.Flags), want.deletedFlag)
+}
+
+func assertPresence(
+	t *testing.T,
+	name string,
+	field string,
+	got bool,
+	value uint64,
+	want presenceExpectation,
+) {
+	t.Helper()
+
+	switch want {
+	case expectEither:
+		return
+	case expectAbsent:
+		if got {
+			t.Fatalf("%s %s presence = %t (value %d), want absent", name, field, got, value)
+		}
+	case expectPresent:
+		if !got {
+			t.Fatalf("%s %s presence = %t (value %d), want present", name, field, got, value)
+		}
+	default:
+		t.Fatalf("%s %s expectation = %d, want known value", name, field, want)
+	}
 }
 
 func assertHeapPageRedirect(t *testing.T, relation *Relation, pageID PageID, slotIndex uint64) storage.RowHandle {

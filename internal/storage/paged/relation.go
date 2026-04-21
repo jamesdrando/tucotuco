@@ -32,8 +32,9 @@ var (
 
 const (
 	relationMetadataMagic   uint32 = 0x4e4c4552 // "RELN"
-	relationMetadataVersion uint16 = 1
-	relationMetadataSize           = 40
+	relationMetadataVersion uint16 = 2
+	relationMetadataV1Size         = 40
+	relationMetadataSize           = 48
 )
 
 // RelationMetadata is the relation-local metadata persisted on page 0.
@@ -43,6 +44,7 @@ type RelationMetadata struct {
 	FirstHeapPage PageID
 	LastHeapPage  PageID
 	InsertHint    PageID
+	NextVersion   uint64
 }
 
 // HeapManager maps logical tables onto per-table relation files under one root.
@@ -104,6 +106,10 @@ func OpenHeapManager(root string, pageSize, cacheSize int) (*HeapManager, error)
 
 	walLog, err := wal.Open(walFilePath(root))
 	if err != nil {
+		return nil, err
+	}
+	if err := recoverPagedRelations(root, pageSize, walLog); err != nil {
+		_ = walLog.Close()
 		return nil, err
 	}
 
@@ -265,6 +271,76 @@ func (r *Relation) Metadata() (RelationMetadata, error) {
 	return decodeRelationMetadataPage(page)
 }
 
+func (r *Relation) readMetadata() (RelationMetadata, error) {
+	page, err := r.manager.Fetch(0)
+	if err != nil {
+		return RelationMetadata{}, err
+	}
+	defer func() {
+		_ = r.manager.Unpin(page, false)
+	}()
+
+	return decodeRelationMetadataPage(page)
+}
+
+func (r *Relation) writeMetadata(metadata RelationMetadata) error {
+	page, err := r.manager.Fetch(0)
+	if err != nil {
+		return err
+	}
+	if err := r.mutateAndFinalizePage(page, func() error {
+		return applyRelationMetadata(page.data, metadata)
+	}); err != nil {
+		_ = r.manager.Unpin(page, false)
+		return err
+	}
+	return r.manager.Unpin(page, true)
+}
+
+func allocateRelationVersion(metadata *RelationMetadata) uint64 {
+	if metadata == nil {
+		return 0
+	}
+	if metadata.NextVersion == 0 {
+		metadata.NextVersion = 1
+	}
+
+	version := metadata.NextVersion
+	metadata.NextVersion++
+	return version
+}
+
+func finalizeCachedPageChecksum(page *Page) error {
+	if page == nil {
+		return ErrInvalidRelation
+	}
+
+	header, err := DecodePageHeader(page.Bytes())
+	if err != nil {
+		return err
+	}
+	header.Checksum = 0
+	if err := EncodePageHeader(page.Bytes(), header); err != nil {
+		return err
+	}
+	header.Checksum = ComputePageChecksum(page.Bytes())
+	return EncodePageHeader(page.Bytes(), header)
+}
+
+func (r *Relation) mutateAndFinalizePage(page *Page, mutate func() error) error {
+	if err := r.mutateAndLogPage(page, mutate); err != nil {
+		return err
+	}
+	return finalizeCachedPageChecksum(page)
+}
+
+func (r *Relation) mutateAndFinalizeHeapPage(page *pinnedHeapPage, mutate func(heap *heapPage) error) error {
+	if err := r.mutateAndLogHeapPage(page, mutate); err != nil {
+		return err
+	}
+	return finalizeCachedPageChecksum(page.page)
+}
+
 // Insert appends row to the relation heap and returns its page/slot handle.
 func (r *Relation) Insert(row storage.Row) (storage.RowHandle, error) {
 	r.mu.Lock()
@@ -274,11 +350,24 @@ func (r *Relation) Insert(row storage.Row) (storage.RowHandle, error) {
 		return storage.RowHandle{}, ErrClosed
 	}
 
-	tuple, err := encodeRowTuple(r.desc, row)
+	metadata, err := r.readMetadata()
 	if err != nil {
 		return storage.RowHandle{}, err
 	}
-	return r.insertEncodedTuple(tuple)
+	version := allocateRelationVersion(&metadata)
+
+	tuple, err := encodeRowTuple(r.desc, row, version)
+	if err != nil {
+		return storage.RowHandle{}, err
+	}
+	handle, err := r.insertEncodedTuple(&metadata, tuple)
+	if err != nil {
+		return storage.RowHandle{}, err
+	}
+	if err := r.writeMetadata(metadata); err != nil {
+		return storage.RowHandle{}, err
+	}
+	return handle, nil
 }
 
 // Update replaces the row stored at handle while preserving the original
@@ -294,7 +383,13 @@ func (r *Relation) Update(handle storage.RowHandle, row storage.Row) error {
 		return ErrRowNotFound
 	}
 
-	tuple, err := encodeRowTuple(r.desc, row)
+	metadata, err := r.readMetadata()
+	if err != nil {
+		return err
+	}
+	version := allocateRelationVersion(&metadata)
+
+	tuple, err := encodeRowTuple(r.desc, row, version)
 	if err != nil {
 		return err
 	}
@@ -310,31 +405,65 @@ func (r *Relation) Update(handle storage.RowHandle, row storage.Row) error {
 
 	livePage := location.livePage()
 	if len(tuple) <= int(location.currentSlot.Length) {
-		if err := r.mutateAndLogHeapPage(livePage, func(heap *heapPage) error {
+		if err := r.mutateAndFinalizeHeapPage(livePage, func(heap *heapPage) error {
 			return heap.rewriteTuple(location.currentHandle.Slot, tuple)
 		}); err != nil {
+			return err
+		}
+		r.releaseResolvedRow(location)
+		location = nil
+		if err := r.writeMetadata(metadata); err != nil {
 			return err
 		}
 		return nil
 	}
 
-	newHandle, err := r.insertEncodedTuple(tuple)
+	rootHandle := location.rootHandle
+	currentHandle := location.currentHandle
+	redirected := location.redirected()
+	r.releaseResolvedRow(location)
+	location = nil
+
+	newHandle, err := r.insertEncodedTuple(&metadata, tuple)
 	if err != nil {
 		return err
 	}
 
-	if err := r.mutateAndLogHeapPage(location.rootPage, func(heap *heapPage) error {
-		return heap.installRedirect(location.rootHandle.Slot, newHandle)
-	}); err != nil {
+	rootPage, err := r.fetchHeapPage(PageID(rootHandle.Page))
+	if err != nil {
 		return err
 	}
 
-	if location.redirected() {
-		if err := r.mutateAndLogHeapPage(livePage, func(heap *heapPage) error {
-			return heap.markDead(location.currentHandle.Slot)
-		}); err != nil {
+	if err := r.mutateAndFinalizeHeapPage(rootPage, func(heap *heapPage) error {
+		return heap.installRedirect(rootHandle.Slot, newHandle)
+	}); err != nil {
+		r.releasePinnedHeapPage(rootPage)
+		return err
+	}
+
+	var currentPage *pinnedHeapPage
+	if redirected {
+		currentPage, err = r.fetchHeapPage(PageID(currentHandle.Page))
+		if err != nil {
+			r.releasePinnedHeapPage(rootPage)
 			return err
 		}
+
+		if err := r.mutateAndFinalizeHeapPage(currentPage, func(heap *heapPage) error {
+			return heap.markTerminal(currentHandle.Slot, version)
+		}); err != nil {
+			r.releasePinnedHeapPage(currentPage)
+			r.releasePinnedHeapPage(rootPage)
+			return err
+		}
+	}
+
+	r.releasePinnedHeapPage(currentPage)
+	currentPage = nil
+	r.releasePinnedHeapPage(rootPage)
+	rootPage = nil
+	if err := r.writeMetadata(metadata); err != nil {
+		return err
 	}
 
 	return nil
@@ -353,25 +482,36 @@ func (r *Relation) Delete(handle storage.RowHandle) error {
 		return ErrRowNotFound
 	}
 
+	metadata, err := r.readMetadata()
+	if err != nil {
+		return err
+	}
+	version := allocateRelationVersion(&metadata)
+
 	location, err := r.resolveRowForWrite(handle)
 	if err != nil {
 		return err
 	}
 	defer r.releaseResolvedRow(location)
 
-	if err := r.mutateAndLogHeapPage(location.rootPage, func(heap *heapPage) error {
-		return heap.markDead(location.rootHandle.Slot)
+	if err := r.mutateAndFinalizeHeapPage(location.livePage(), func(heap *heapPage) error {
+		return heap.markTerminal(location.currentHandle.Slot, version)
 	}); err != nil {
 		return err
 	}
 
 	if location.redirected() {
-		livePage := location.livePage()
-		if err := r.mutateAndLogHeapPage(livePage, func(heap *heapPage) error {
-			return heap.markDead(location.currentHandle.Slot)
+		if err := r.mutateAndFinalizeHeapPage(location.rootPage, func(heap *heapPage) error {
+			return heap.markDead(location.rootHandle.Slot)
 		}); err != nil {
 			return err
 		}
+	}
+
+	r.releaseResolvedRow(location)
+	location = nil
+	if err := r.writeMetadata(metadata); err != nil {
+		return err
 	}
 
 	return nil
@@ -452,6 +592,10 @@ func openRelation(
 		_ = relation.Close()
 		return nil, fmt.Errorf("paged: relation page size mismatch: have %d want %d", metadata.PageSize, pageSize)
 	}
+	if err := relation.reconcileVersionCounter(metadata); err != nil {
+		_ = relation.Close()
+		return nil, err
+	}
 
 	return relation, nil
 }
@@ -461,13 +605,14 @@ func (r *Relation) initializeMetadata() error {
 	if err != nil {
 		return err
 	}
-	if err := r.mutateAndLogPage(page, func() error {
+	if err := r.mutateAndFinalizePage(page, func() error {
 		return applyRelationMetadata(page.data, RelationMetadata{
 			Table:         r.desc.ID,
 			PageSize:      r.store.PageSize(),
 			FirstHeapPage: 0,
 			LastHeapPage:  0,
 			InsertHint:    0,
+			NextVersion:   1,
 		})
 	}); err != nil {
 		_ = r.manager.Unpin(page, false)
@@ -525,25 +670,15 @@ func (r *Relation) selectInsertPage(tuple []byte, metadata RelationMetadata) (*P
 	return page, true, nil
 }
 
-func (r *Relation) insertEncodedTuple(tuple []byte) (storage.RowHandle, error) {
+func (r *Relation) insertEncodedTuple(metadata *RelationMetadata, tuple []byte) (storage.RowHandle, error) {
 	if len(tuple)+pageSlotSize > r.store.PageSize()-pageHeaderSize {
 		return storage.RowHandle{}, ErrRowTooLarge
 	}
-
-	metadataPage, err := r.manager.Fetch(0)
-	if err != nil {
-		return storage.RowHandle{}, err
-	}
-	metadata, err := decodeRelationMetadataPage(metadataPage)
-	if err != nil {
-		_ = r.manager.Unpin(metadataPage, false)
-		return storage.RowHandle{}, err
-	}
-	if err := r.manager.Unpin(metadataPage, false); err != nil {
-		return storage.RowHandle{}, err
+	if metadata == nil {
+		return storage.RowHandle{}, ErrInvalidRelation
 	}
 
-	targetPage, targetDirty, err := r.selectInsertPage(tuple, metadata)
+	targetPage, targetDirty, err := r.selectInsertPage(tuple, *metadata)
 	if err != nil {
 		return storage.RowHandle{}, err
 	}
@@ -558,7 +693,7 @@ func (r *Relation) insertEncodedTuple(tuple []byte) (storage.RowHandle, error) {
 		return storage.RowHandle{}, err
 	}
 	slotIndex := uint16(0)
-	if err := r.mutateAndLogPage(targetPage, func() error {
+	if err := r.mutateAndFinalizePage(targetPage, func() error {
 		insertedSlot, err := heap.insertTuple(tuple)
 		if err != nil {
 			return err
@@ -571,25 +706,11 @@ func (r *Relation) insertEncodedTuple(tuple []byte) (storage.RowHandle, error) {
 	targetDirty = true
 
 	pageID := targetPage.ID()
-	r.noteInsertedPage(&metadata, heap, pageID)
+	r.noteInsertedPage(metadata, heap, pageID)
 	if err := r.manager.Unpin(targetPage, targetDirty); err != nil {
 		return storage.RowHandle{}, err
 	}
 	targetPage = nil
-
-	metadataPage, err = r.manager.Fetch(0)
-	if err != nil {
-		return storage.RowHandle{}, err
-	}
-	if err := r.mutateAndLogPage(metadataPage, func() error {
-		return applyRelationMetadata(metadataPage.data, metadata)
-	}); err != nil {
-		_ = r.manager.Unpin(metadataPage, false)
-		return storage.RowHandle{}, err
-	}
-	if err := r.manager.Unpin(metadataPage, true); err != nil {
-		return storage.RowHandle{}, err
-	}
 
 	return storage.RowHandle{Page: uint64(pageID), Slot: uint64(slotIndex)}, nil
 }
@@ -609,6 +730,77 @@ func (r *Relation) noteInsertedPage(metadata *RelationMetadata, heap *heapPage, 
 	} else {
 		metadata.InsertHint = 0
 	}
+}
+
+func (r *Relation) reconcileVersionCounter(metadata RelationMetadata) error {
+	nextVersion, err := r.scanNextVersionFloor()
+	if err != nil {
+		return err
+	}
+	if nextVersion <= metadata.NextVersion {
+		return nil
+	}
+
+	metadata.NextVersion = nextVersion
+	return r.writeMetadata(metadata)
+}
+
+func (r *Relation) scanNextVersionFloor() (uint64, error) {
+	pageCount, err := r.store.PageCount()
+	if err != nil {
+		return 0, err
+	}
+
+	var maxVersion uint64
+	for pageID := PageID(1); pageID < pageCount; pageID++ {
+		page, err := r.manager.Fetch(pageID)
+		if err != nil {
+			return 0, err
+		}
+
+		heap, err := newHeapPage(page)
+		if err != nil {
+			_ = r.manager.Unpin(page, false)
+			return 0, err
+		}
+
+		for slotIndex := uint64(0); slotIndex < uint64(heap.header.SlotCount); slotIndex++ {
+			slot, err := heap.readSlot(slotIndex)
+			if err != nil {
+				_ = r.manager.Unpin(page, false)
+				return 0, err
+			}
+			if slot.Flags != slotFlagLive && slot.Flags != slotFlagDead {
+				continue
+			}
+
+			start, end, err := heap.payloadBounds(slot)
+			if err != nil {
+				_ = r.manager.Unpin(page, false)
+				return 0, err
+			}
+			header, err := decodeTupleHeader(page.data[start:end])
+			if err != nil {
+				_ = r.manager.Unpin(page, false)
+				return 0, err
+			}
+			if header.Xmin > maxVersion {
+				maxVersion = header.Xmin
+			}
+			if header.Xmax > maxVersion {
+				maxVersion = header.Xmax
+			}
+		}
+
+		if err := r.manager.Unpin(page, false); err != nil {
+			return 0, err
+		}
+	}
+
+	if maxVersion == 0 {
+		return 1, nil
+	}
+	return maxVersion + 1, nil
 }
 
 func (r *Relation) lookupHandle(handle storage.RowHandle, redirected bool) (storage.Row, error) {
@@ -707,7 +899,23 @@ func (r *Relation) fetchRowLocation(handle storage.RowHandle) (*pinnedHeapPage, 
 	}
 
 	switch slot.Flags {
-	case slotFlagLive, slotFlagRedirect:
+	case slotFlagLive:
+		tuple, _, err := page.heap.tuple(handle.Slot)
+		if err != nil {
+			r.releasePinnedHeapPage(page)
+			return nil, slotEntry{}, err
+		}
+		header, err := decodeTupleHeader(tuple)
+		if err != nil {
+			r.releasePinnedHeapPage(page)
+			return nil, slotEntry{}, err
+		}
+		if !header.visible() {
+			r.releasePinnedHeapPage(page)
+			return nil, slotEntry{}, ErrRowNotFound
+		}
+		return page, slot, nil
+	case slotFlagRedirect:
 		return page, slot, nil
 	case slotFlagDead, slotFlagUnused:
 		r.releasePinnedHeapPage(page)
@@ -830,6 +1038,9 @@ func encodeRelationMetadata(metadata RelationMetadata) ([]byte, error) {
 	if !metadata.Table.Valid() || metadata.PageSize < pageHeaderSize {
 		return nil, ErrInvalidRelation
 	}
+	if metadata.NextVersion == 0 {
+		metadata.NextVersion = 1
+	}
 
 	schemaBytes := []byte(metadata.Table.Schema)
 	nameBytes := []byte(metadata.Table.Name)
@@ -842,35 +1053,49 @@ func encodeRelationMetadata(metadata RelationMetadata) ([]byte, error) {
 	binary.LittleEndian.PutUint64(payload[0x10:0x18], uint64(metadata.FirstHeapPage))
 	binary.LittleEndian.PutUint64(payload[0x18:0x20], uint64(metadata.LastHeapPage))
 	binary.LittleEndian.PutUint64(payload[0x20:0x28], uint64(metadata.InsertHint))
+	binary.LittleEndian.PutUint64(payload[0x28:0x30], metadata.NextVersion)
 	copy(payload[relationMetadataSize:], schemaBytes)
 	copy(payload[relationMetadataSize+len(schemaBytes):], nameBytes)
 	return payload, nil
 }
 
 func decodeRelationMetadata(payload []byte) (RelationMetadata, error) {
-	if len(payload) < relationMetadataSize {
+	if len(payload) < relationMetadataV1Size {
 		return RelationMetadata{}, fmt.Errorf("paged: relation metadata payload too small: %d", len(payload))
 	}
 	if binary.LittleEndian.Uint32(payload[0x00:0x04]) != relationMetadataMagic {
 		return RelationMetadata{}, errors.New("paged: invalid relation metadata magic")
 	}
-	if binary.LittleEndian.Uint16(payload[0x04:0x06]) != relationMetadataVersion {
+	version := binary.LittleEndian.Uint16(payload[0x04:0x06])
+	if version != 1 && version != relationMetadataVersion {
 		return RelationMetadata{}, fmt.Errorf(
 			"paged: unsupported relation metadata version %d",
-			binary.LittleEndian.Uint16(payload[0x04:0x06]),
+			version,
 		)
 	}
 
 	schemaLen := int(binary.LittleEndian.Uint16(payload[0x06:0x08]))
 	nameLen := int(binary.LittleEndian.Uint16(payload[0x08:0x0a]))
-	if relationMetadataSize+schemaLen+nameLen > len(payload) {
+	baseSize := relationMetadataV1Size
+	if version >= relationMetadataVersion {
+		baseSize = relationMetadataSize
+	}
+	if baseSize+schemaLen+nameLen > len(payload) {
 		return RelationMetadata{}, fmt.Errorf("paged: relation metadata names exceed payload")
 	}
 
-	start := relationMetadataSize
+	start := baseSize
 	schema := string(payload[start : start+schemaLen])
 	start += schemaLen
 	name := string(payload[start : start+nameLen])
+
+	nextVersion := uint64(1)
+	if version >= relationMetadataVersion {
+		nextVersion = binary.LittleEndian.Uint64(payload[0x28:0x30])
+		if nextVersion == 0 {
+			nextVersion = 1
+		}
+	}
 
 	return RelationMetadata{
 		Table: storage.TableID{
@@ -881,5 +1106,6 @@ func decodeRelationMetadata(payload []byte) (RelationMetadata, error) {
 		FirstHeapPage: PageID(binary.LittleEndian.Uint64(payload[0x10:0x18])),
 		LastHeapPage:  PageID(binary.LittleEndian.Uint64(payload[0x18:0x20])),
 		InsertHint:    PageID(binary.LittleEndian.Uint64(payload[0x20:0x28])),
+		NextVersion:   nextVersion,
 	}, nil
 }
