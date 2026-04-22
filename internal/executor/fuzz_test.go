@@ -18,6 +18,13 @@ func FuzzCompileEvalExpr(f *testing.F) {
 		"NOT FALSE",
 		"CAST('42' AS INTEGER)",
 		"1 IN (1, 2, 3)",
+		"POSITION('ph', 'alphabet')",
+		"OVERLAY('abcdef', 'XY', 3, 2)",
+		"REGEXP_REPLACE('abc123', '[0-9]+', '-')",
+		"ROUND(12.345, 2)",
+		"POWER(2, 8)",
+		"ATAN2(0, 1)",
+		"RANDOM()",
 	} {
 		f.Add(seed)
 	}

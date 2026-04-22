@@ -135,6 +135,94 @@ func TestBuilderBuildsDerivedTableInput(t *testing.T) {
 	}
 }
 
+func TestBuilderBuildsGlobalAggregatePlanForEvery(t *testing.T) {
+	t.Parallel()
+
+	stmt, bindings, types := analyzeSelect(t, plannerTestCatalog(t), "SELECT EVERY(total = 1) AS every_total_is_one FROM orders")
+
+	plan, diags := NewBuilder(bindings, types).Build(stmt)
+	if len(diags) != 0 {
+		t.Fatalf("Build() diagnostics = %#v, want none", diags)
+	}
+
+	project, ok := plan.(*Project)
+	if !ok {
+		t.Fatalf("plan = %T, want *Project", plan)
+	}
+	if got, want := project.String(), "Project(columns=[every_total_is_one BOOLEAN])"; got != want {
+		t.Fatalf("project.String() = %q, want %q", got, want)
+	}
+
+	aggregate, ok := project.Input.(*Aggregate)
+	if !ok {
+		t.Fatalf("project.Input = %T, want *Aggregate", project.Input)
+	}
+	if got, want := aggregate.String(), "Aggregate"; got != want {
+		t.Fatalf("aggregate.String() = %q, want %q", got, want)
+	}
+	if got, want := stripPlannerColumns(aggregate.Columns()), []Column{{Name: "every_total_is_one", Type: mustTypeDesc(t, "BOOLEAN")}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("aggregate.Columns() = %#v, want %#v", got, want)
+	}
+
+	scan, ok := aggregate.Input.(*Scan)
+	if !ok {
+		t.Fatalf("aggregate.Input = %T, want *Scan", aggregate.Input)
+	}
+	if scan.Table != (storage.TableID{Schema: "public", Name: "orders"}) {
+		t.Fatalf("scan.Table = %#v, want public.orders", scan.Table)
+	}
+}
+
+func TestBuilderBuildsGroupedAggregatePlanWithHaving(t *testing.T) {
+	t.Parallel()
+
+	stmt, bindings, types := analyzeSelect(t, plannerTestCatalog(t), "SELECT customer_id, COUNT(*) AS n FROM orders GROUP BY customer_id HAVING COUNT(*) > 0")
+
+	plan, diags := NewBuilder(bindings, types).Build(stmt)
+	if len(diags) != 0 {
+		t.Fatalf("Build() diagnostics = %#v, want none", diags)
+	}
+
+	project, ok := plan.(*Project)
+	if !ok {
+		t.Fatalf("plan = %T, want *Project", plan)
+	}
+	if got, want := project.String(), "Project(columns=[customer_id INTEGER, n BIGINT NOT NULL])"; got != want {
+		t.Fatalf("project.String() = %q, want %q", got, want)
+	}
+
+	having, ok := project.Input.(*Filter)
+	if !ok {
+		t.Fatalf("project.Input = %T, want *Filter", project.Input)
+	}
+	if got, want := having.String(), "Filter(predicate=count(*) > 0)"; got != want {
+		t.Fatalf("having.String() = %q, want %q", got, want)
+	}
+
+	aggregate, ok := having.Input.(*Aggregate)
+	if !ok {
+		t.Fatalf("having.Input = %T, want *Aggregate", having.Input)
+	}
+	if got, want := aggregate.String(), "Aggregate(groups=[customer_id])"; got != want {
+		t.Fatalf("aggregate.String() = %q, want %q", got, want)
+	}
+	if got, want := stripPlannerColumns(aggregate.Columns()), []Column{
+		{Name: "customer_id", Type: mustTypeDesc(t, "INTEGER")},
+		{Name: "n", Type: mustTypeDesc(t, "BIGINT NOT NULL")},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("aggregate.Columns() = %#v, want %#v", got, want)
+	}
+	assertPlannerColumnBinding(t, aggregate.Columns()[0], "orders", "customer_id")
+
+	scan, ok := aggregate.Input.(*Scan)
+	if !ok {
+		t.Fatalf("aggregate.Input = %T, want *Scan", aggregate.Input)
+	}
+	if scan.Table != (storage.TableID{Schema: "public", Name: "orders"}) {
+		t.Fatalf("scan.Table = %#v, want public.orders", scan.Table)
+	}
+}
+
 func TestBuilderRejectsUnsupportedOrderBy(t *testing.T) {
 	t.Parallel()
 

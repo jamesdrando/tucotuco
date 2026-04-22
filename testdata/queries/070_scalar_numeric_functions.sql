@@ -1,0 +1,24 @@
+SELECT
+  ABS(-12.5) AS abs_decimal,
+  CEIL(1.2) AS ceil_decimal,
+  FLOOR(1.8) AS floor_decimal,
+  ROUND(12.345, 2) AS round_decimal,
+  TRUNCATE(12.345, 2) AS truncate_decimal,
+  MOD(10, 3) AS mod_integer,
+  SIGN(-12.5) AS sign_decimal,
+  GREATEST(1.5, 2.5, 0.5) AS greatest_decimal,
+  LEAST(1.5, 2.5, 0.5) AS least_decimal;
+SELECT
+  POWER(2, 3) AS power_result,
+  SQRT(9) AS sqrt_result,
+  EXP(0) AS exp_result,
+  LN(1) AS ln_result,
+  LOG(10, 100) AS log_result,
+  LOG10(1000) AS log10_result,
+  SIN(0) AS sin_result,
+  COS(0) AS cos_result,
+  TAN(0) AS tan_result,
+  ASIN(0) AS asin_result,
+  ACOS(1) AS acos_result,
+  ATAN(1) AS atan_result,
+  ATAN2(1, 1) AS atan2_result;

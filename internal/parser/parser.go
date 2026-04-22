@@ -1330,6 +1330,19 @@ func (p *Parser) parseFunctionCall() Node {
 		},
 	}
 
+	if len(name.Parts) == 1 && !p.matchKeyword("DISTINCT") && !p.matchKeyword("ALL") {
+		switch strings.ToUpper(name.Parts[0].Name) {
+		case "SUBSTRING":
+			return p.parseSubstringStringForm(call)
+		case "TRIM":
+			return p.parseTrimStringForm(call)
+		case "POSITION":
+			return p.parsePositionStringForm(call)
+		case "OVERLAY":
+			return p.parseOverlayStringForm(call)
+		}
+	}
+
 	if p.consumeKeyword("DISTINCT") {
 		call.SetQuantifier = "DISTINCT"
 	} else if p.consumeKeyword("ALL") {
@@ -1372,6 +1385,138 @@ func (p *Parser) parseFunctionCall() Node {
 	call.Stop = spanEnd(closeTok, call.Stop)
 
 	return call
+}
+
+func (p *Parser) parseSubstringStringForm(call *FunctionCall) Node {
+	source := p.parseExpr()
+	if !p.consumeKeyword("FROM") {
+		return p.finishFunctionCallWithInitialArgs(call, source)
+	}
+
+	p.appendFunctionArg(call, source)
+	p.appendFunctionArg(call, p.parseExpr())
+	if p.consumeKeyword("FOR") {
+		p.appendFunctionArg(call, p.parseExpr())
+	}
+
+	return p.finishSpecialFunctionCall(call)
+}
+
+func (p *Parser) parseTrimStringForm(call *FunctionCall) Node {
+	functionName := "TRIM"
+	explicitMode := false
+
+	switch {
+	case p.consumeKeyword("LEADING"):
+		functionName = "LTRIM"
+		explicitMode = true
+	case p.consumeKeyword("TRAILING"):
+		functionName = "RTRIM"
+		explicitMode = true
+	case p.consumeKeyword("BOTH"):
+		functionName = "TRIM"
+		explicitMode = true
+	}
+
+	if explicitMode {
+		p.renameFunctionCall(call, functionName)
+		if p.consumeKeyword("FROM") {
+			p.appendFunctionArg(call, p.parseExpr())
+			return p.finishSpecialFunctionCall(call)
+		}
+
+		trimChars := p.parseExpr()
+		p.expectKeyword("FROM")
+		source := p.parseExpr()
+		p.appendFunctionArg(call, source)
+		p.appendFunctionArg(call, trimChars)
+		return p.finishSpecialFunctionCall(call)
+	}
+
+	if p.consumeKeyword("FROM") {
+		p.renameFunctionCall(call, functionName)
+		p.appendFunctionArg(call, p.parseExpr())
+		return p.finishSpecialFunctionCall(call)
+	}
+
+	firstArg := p.parseExpr()
+	if !p.consumeKeyword("FROM") {
+		return p.finishFunctionCallWithInitialArgs(call, firstArg)
+	}
+
+	p.renameFunctionCall(call, functionName)
+	source := p.parseExpr()
+	p.appendFunctionArg(call, source)
+	p.appendFunctionArg(call, firstArg)
+
+	return p.finishSpecialFunctionCall(call)
+}
+
+func (p *Parser) parsePositionStringForm(call *FunctionCall) Node {
+	substr := p.parseAdditive()
+	if !p.consumeKeyword("IN") {
+		return p.finishFunctionCallWithInitialArgs(call, substr)
+	}
+
+	p.appendFunctionArg(call, substr)
+	p.appendFunctionArg(call, p.parseExpr())
+
+	return p.finishSpecialFunctionCall(call)
+}
+
+func (p *Parser) parseOverlayStringForm(call *FunctionCall) Node {
+	source := p.parseExpr()
+	if !p.consumeFunctionSyntaxWord("PLACING") {
+		return p.finishFunctionCallWithInitialArgs(call, source)
+	}
+
+	p.appendFunctionArg(call, source)
+	p.appendFunctionArg(call, p.parseExpr())
+	p.expectKeyword("FROM")
+	p.appendFunctionArg(call, p.parseExpr())
+	if p.consumeKeyword("FOR") {
+		p.appendFunctionArg(call, p.parseExpr())
+	}
+
+	return p.finishSpecialFunctionCall(call)
+}
+
+func (p *Parser) finishFunctionCallWithInitialArgs(call *FunctionCall, initialArgs ...Node) Node {
+	for _, arg := range initialArgs {
+		p.appendFunctionArg(call, arg)
+	}
+
+	for p.consumePunctuation(",") {
+		p.appendFunctionArg(call, p.parseExpr())
+	}
+
+	closeTok := p.expectPunctuation(")")
+	call.Stop = spanEnd(closeTok, call.Stop)
+
+	return call
+}
+
+func (p *Parser) finishSpecialFunctionCall(call *FunctionCall) Node {
+	closeTok := p.expectPunctuation(")")
+	call.Stop = spanEnd(closeTok, call.Stop)
+	return call
+}
+
+func (p *Parser) appendFunctionArg(call *FunctionCall, arg Node) {
+	if call == nil || arg == nil {
+		return
+	}
+
+	call.Args = append(call.Args, arg)
+	call.Stop = arg.End()
+}
+
+func (p *Parser) renameFunctionCall(call *FunctionCall, name string) {
+	if call == nil || call.Name == nil || len(call.Name.Parts) == 0 {
+		return
+	}
+
+	call.Name.Parts[len(call.Name.Parts)-1].Name = strings.ToLower(name)
 }
 
 func (p *Parser) parseCaseExpr() Node {
@@ -2106,6 +2251,19 @@ func canContinueTypeName(tok token.Token) bool {
 	default:
 		return false
 	}
+}
+
+func (p *Parser) consumeFunctionSyntaxWord(word string) bool {
+	tok := p.peekSignificant()
+	switch tok.Kind {
+	case token.KindIdentifier, token.KindKeyword:
+		if strings.EqualFold(tok.Lexeme, word) {
+			p.consumeSignificant()
+			return true
+		}
+	}
+
+	return false
 }
 
 func canStartAlias(tok token.Token) bool {

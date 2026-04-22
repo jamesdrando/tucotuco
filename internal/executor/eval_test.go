@@ -418,6 +418,301 @@ func TestCompileExprFunctionCallsAndCase(t *testing.T) {
 	}
 }
 
+func TestCompileExprExtendedStringFunctionCalls(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+		node parser.Node
+		want types.Value
+	}{
+		{
+			name: "POSITION returns 1-based character offset",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("POSITION"),
+				Args: []parser.Node{
+					&parser.StringLiteral{Value: "ph"},
+					&parser.StringLiteral{Value: "alphabet"},
+				},
+			},
+			want: types.Int64Value(3),
+		},
+		{
+			name: "OVERLAY replaces requested span",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("OVERLAY"),
+				Args: []parser.Node{
+					&parser.StringLiteral{Value: "alphabet"},
+					&parser.StringLiteral{Value: "XY"},
+					&parser.IntegerLiteral{Text: "3"},
+					&parser.IntegerLiteral{Text: "2"},
+				},
+			},
+			want: types.StringValue("alXYabet"),
+		},
+		{
+			name: "REGEXP_LIKE honors inline flags",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("REGEXP_LIKE"),
+				Args: []parser.Node{
+					&parser.StringLiteral{Value: "Alpha"},
+					&parser.StringLiteral{Value: "^a"},
+					&parser.StringLiteral{Value: "i"},
+				},
+			},
+			want: types.BoolValue(true),
+		},
+		{
+			name: "REGEXP_REPLACE substitutes all matches",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("REGEXP_REPLACE"),
+				Args: []parser.Node{
+					&parser.StringLiteral{Value: "abc123def456"},
+					&parser.StringLiteral{Value: "[0-9]+"},
+					&parser.StringLiteral{Value: "-"},
+				},
+			},
+			want: types.StringValue("abc-def-"),
+		},
+		{
+			name: "REGEXP_SUBSTR returns first match",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("REGEXP_SUBSTR"),
+				Args: []parser.Node{
+					&parser.StringLiteral{Value: "abc123def"},
+					&parser.StringLiteral{Value: "[0-9]+"},
+				},
+			},
+			want: types.StringValue("123"),
+		},
+		{
+			name: "REGEXP_SUBSTR returns null when unmatched",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("REGEXP_SUBSTR"),
+				Args: []parser.Node{
+					&parser.StringLiteral{Value: "abcdef"},
+					&parser.StringLiteral{Value: "[0-9]+"},
+				},
+			},
+			want: types.NullValue(),
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			assertEvalValue(t, mustCompileExpr(t, testCase.node, nil), NewRow(), testCase.want)
+		})
+	}
+}
+
+func TestCompileExprExtendedNumericFunctionCalls(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+		node parser.Node
+		want types.Value
+	}{
+		{
+			name: "CEIL rounds upward",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("CEIL"),
+				Args: []parser.Node{&parser.FloatLiteral{Text: "12.25"}},
+			},
+			want: mustDecimalValue(t, "13"),
+		},
+		{
+			name: "FLOOR rounds downward",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("FLOOR"),
+				Args: []parser.Node{&parser.FloatLiteral{Text: "12.75"}},
+			},
+			want: mustDecimalValue(t, "12"),
+		},
+		{
+			name: "ROUND keeps requested scale",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("ROUND"),
+				Args: []parser.Node{
+					&parser.FloatLiteral{Text: "12.345"},
+					&parser.IntegerLiteral{Text: "2"},
+				},
+			},
+			want: mustDecimalValue(t, "12.35"),
+		},
+		{
+			name: "TRUNCATE drops extra digits",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("TRUNCATE"),
+				Args: []parser.Node{
+					&parser.FloatLiteral{Text: "12.345"},
+					&parser.IntegerLiteral{Text: "2"},
+				},
+			},
+			want: mustDecimalValue(t, "12.34"),
+		},
+		{
+			name: "MOD delegates to numeric remainder",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("MOD"),
+				Args: []parser.Node{
+					&parser.IntegerLiteral{Text: "10"},
+					&parser.IntegerLiteral{Text: "3"},
+				},
+			},
+			want: types.Int32Value(1),
+		},
+		{
+			name: "POWER computes exponentiation",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("POWER"),
+				Args: []parser.Node{
+					&parser.IntegerLiteral{Text: "2"},
+					&parser.IntegerLiteral{Text: "3"},
+				},
+			},
+			want: types.Float64Value(8),
+		},
+		{
+			name: "SQRT returns root",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("SQRT"),
+				Args: []parser.Node{&parser.IntegerLiteral{Text: "9"}},
+			},
+			want: types.Float64Value(3),
+		},
+		{
+			name: "EXP exponentiates",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("EXP"),
+				Args: []parser.Node{&parser.IntegerLiteral{Text: "0"}},
+			},
+			want: types.Float64Value(1),
+		},
+		{
+			name: "LN returns natural logarithm",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("LN"),
+				Args: []parser.Node{&parser.IntegerLiteral{Text: "1"}},
+			},
+			want: types.Float64Value(0),
+		},
+		{
+			name: "LOG supports explicit base",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("LOG"),
+				Args: []parser.Node{
+					&parser.IntegerLiteral{Text: "10"},
+					&parser.IntegerLiteral{Text: "1"},
+				},
+			},
+			want: types.Float64Value(0),
+		},
+		{
+			name: "LOG10 returns common logarithm",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("LOG10"),
+				Args: []parser.Node{&parser.IntegerLiteral{Text: "1"}},
+			},
+			want: types.Float64Value(0),
+		},
+		{
+			name: "SIN computes sine",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("SIN"),
+				Args: []parser.Node{&parser.IntegerLiteral{Text: "0"}},
+			},
+			want: types.Float64Value(0),
+		},
+		{
+			name: "COS computes cosine",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("COS"),
+				Args: []parser.Node{&parser.IntegerLiteral{Text: "0"}},
+			},
+			want: types.Float64Value(1),
+		},
+		{
+			name: "TAN computes tangent",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("TAN"),
+				Args: []parser.Node{&parser.IntegerLiteral{Text: "0"}},
+			},
+			want: types.Float64Value(0),
+		},
+		{
+			name: "ASIN computes inverse sine",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("ASIN"),
+				Args: []parser.Node{&parser.IntegerLiteral{Text: "0"}},
+			},
+			want: types.Float64Value(0),
+		},
+		{
+			name: "ACOS computes inverse cosine",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("ACOS"),
+				Args: []parser.Node{&parser.IntegerLiteral{Text: "1"}},
+			},
+			want: types.Float64Value(0),
+		},
+		{
+			name: "ATAN computes inverse tangent",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("ATAN"),
+				Args: []parser.Node{&parser.IntegerLiteral{Text: "0"}},
+			},
+			want: types.Float64Value(0),
+		},
+		{
+			name: "ATAN2 computes polar angle",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("ATAN2"),
+				Args: []parser.Node{
+					&parser.IntegerLiteral{Text: "0"},
+					&parser.IntegerLiteral{Text: "1"},
+				},
+			},
+			want: types.Float64Value(0),
+		},
+		{
+			name: "SIGN returns numeric sign",
+			node: &parser.FunctionCall{
+				Name: qualifiedName("SIGN"),
+				Args: []parser.Node{&parser.IntegerLiteral{Text: "-12"}},
+			},
+			want: types.Int32Value(-1),
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			assertEvalValue(t, mustCompileExpr(t, testCase.node, nil), NewRow(), testCase.want)
+		})
+	}
+
+	t.Run("RANDOM returns double precision in [0,1)", func(t *testing.T) {
+		compiled := mustCompileExpr(t, &parser.FunctionCall{Name: qualifiedName("RANDOM")}, nil)
+		if compiled.Type() != (types.TypeDesc{Kind: types.TypeKindDoublePrecision}) {
+			t.Fatalf("Type() = %#v, want %#v", compiled.Type(), types.TypeDesc{Kind: types.TypeKindDoublePrecision})
+		}
+
+		value, err := compiled.Eval(NewRow())
+		if err != nil {
+			t.Fatalf("Eval() error = %v", err)
+		}
+		got, ok := value.Raw().(float64)
+		if !ok {
+			t.Fatalf("Eval() kind = %s, want FLOAT64", value.Kind())
+		}
+		if got < 0 || got >= 1 {
+			t.Fatalf("Eval() = %v, want 0 <= value < 1", got)
+		}
+	})
+}
+
 func TestCompileExprCompileErrors(t *testing.T) {
 	t.Parallel()
 
@@ -561,6 +856,39 @@ func TestCompiledExprRuntimeErrors(t *testing.T) {
 	})
 	if _, err := nonFinite.Eval(NewRow(types.Float64Value(1e308), types.Float64Value(1e308))); !errors.Is(err, types.ErrNonFiniteNumeric) {
 		t.Fatalf("non-finite Eval() error = %v, want %v", err, types.ErrNonFiniteNumeric)
+	}
+
+	overlay := mustCompileExpr(t, &parser.FunctionCall{
+		Name: qualifiedName("OVERLAY"),
+		Args: []parser.Node{
+			&parser.StringLiteral{Value: "abc"},
+			&parser.StringLiteral{Value: "x"},
+			&parser.IntegerLiteral{Text: "2"},
+			&parser.IntegerLiteral{Text: "-1"},
+		},
+	}, nil)
+	if _, err := overlay.Eval(NewRow()); !errors.Is(err, ErrInvalidExpressionType) {
+		t.Fatalf("OVERLAY Eval() error = %v, want %v", err, ErrInvalidExpressionType)
+	}
+
+	regexpLike := mustCompileExpr(t, &parser.FunctionCall{
+		Name: qualifiedName("REGEXP_LIKE"),
+		Args: []parser.Node{
+			&parser.StringLiteral{Value: "abc"},
+			&parser.StringLiteral{Value: "^a"},
+			&parser.StringLiteral{Value: "z"},
+		},
+	}, nil)
+	if _, err := regexpLike.Eval(NewRow()); !errors.Is(err, ErrInvalidExpressionType) {
+		t.Fatalf("REGEXP_LIKE Eval() error = %v, want %v", err, ErrInvalidExpressionType)
+	}
+
+	sqrt := mustCompileExpr(t, &parser.FunctionCall{
+		Name: qualifiedName("SQRT"),
+		Args: []parser.Node{&parser.IntegerLiteral{Text: "-1"}},
+	}, nil)
+	if _, err := sqrt.Eval(NewRow()); !errors.Is(err, types.ErrNonFiniteNumeric) {
+		t.Fatalf("SQRT Eval() error = %v, want %v", err, types.ErrNonFiniteNumeric)
 	}
 }
 

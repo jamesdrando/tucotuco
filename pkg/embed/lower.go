@@ -60,7 +60,7 @@ func buildQueryOperator(
 		store:    store,
 		tx:       tx,
 	}
-	if queryContainsJoin(query) {
+	if queryRequiresDirectLowering(query) {
 		lowered, err := lowerer.lowerQuery(query)
 		if err != nil {
 			return nil, nil, err
@@ -264,8 +264,378 @@ func (l planLowerer) lowerSelect(stmt *parser.SelectStmt) (loweredPlan, error) {
 			columns: input.columns,
 		}
 	}
+	if selectUsesAggregation(stmt) {
+		return l.lowerAggregateSelect(stmt, input)
+	}
 
 	return l.lowerSelectProjection(stmt, input)
+}
+
+type aggregateLowering struct {
+	metadata     aggregateExpressionMetadata
+	groupExprs   []executor.CompiledExpr
+	aggregateOps []executor.AggregateSpec
+	groupRefs    map[string]parser.Node
+	aggRefs      map[*parser.FunctionCall]parser.Node
+	outputShape  rowShape
+	outputCols   []planner.Column
+}
+
+type aggregateExpressionMetadata struct {
+	base     expressionMetadata
+	types    map[parser.Node]sqltypes.TypeDesc
+	bindings map[parser.Node]executor.OrdinalBinding
+}
+
+func (m aggregateExpressionMetadata) TypeOf(node parser.Node) (sqltypes.TypeDesc, bool) {
+	if node != nil {
+		if desc, ok := m.types[node]; ok {
+			return desc, true
+		}
+	}
+
+	return m.base.TypeOf(node)
+}
+
+func (m aggregateExpressionMetadata) BindingOf(node parser.Node) (executor.OrdinalBinding, bool) {
+	if node != nil {
+		if binding, ok := m.bindings[node]; ok {
+			return binding, true
+		}
+	}
+
+	return m.base.BindingOf(node)
+}
+
+func (m aggregateExpressionMetadata) CompileSubquery(node parser.Node) (executor.CompiledExpr, error) {
+	return m.base.CompileSubquery(node)
+}
+
+func (l planLowerer) lowerAggregateSelect(stmt *parser.SelectStmt, input loweredPlan) (loweredPlan, error) {
+	lowering, err := l.buildAggregateLowering(stmt, input)
+	if err != nil {
+		return loweredPlan{}, err
+	}
+
+	aggregated := loweredPlan{
+		op:      executor.NewHashAggregate(input.op, lowering.groupExprs, lowering.aggregateOps...),
+		shape:   lowering.outputShape,
+		columns: lowering.outputCols,
+	}
+	if stmt.Having != nil {
+		predicate, err := l.compileAggregateOutputExpr(stmt.Having, lowering)
+		if err != nil {
+			return loweredPlan{}, err
+		}
+		aggregated = loweredPlan{
+			op:      executor.NewFilter(aggregated.op, predicate),
+			shape:   aggregated.shape,
+			columns: aggregated.columns,
+		}
+	}
+
+	return l.lowerAggregateProjection(stmt, aggregated, lowering)
+}
+
+func (l planLowerer) buildAggregateLowering(stmt *parser.SelectStmt, input loweredPlan) (aggregateLowering, error) {
+	lowering := aggregateLowering{
+		metadata: aggregateExpressionMetadata{
+			base: expressionMetadata{
+				bindings: l.bindings,
+				types:    l.types,
+				store:    l.store,
+				tx:       l.tx,
+			},
+			types:    make(map[parser.Node]sqltypes.TypeDesc),
+			bindings: make(map[parser.Node]executor.OrdinalBinding),
+		},
+		groupRefs:  make(map[string]parser.Node, len(stmt.GroupBy)),
+		aggRefs:    make(map[*parser.FunctionCall]parser.Node),
+		outputCols: make([]planner.Column, 0, len(stmt.GroupBy)),
+	}
+
+	for ordinal, expr := range stmt.GroupBy {
+		if expr == nil {
+			continue
+		}
+
+		compiled, err := compileExpression(l.bindings, l.types, l.store, l.tx, expr, input.shape)
+		if err != nil {
+			return aggregateLowering{}, err
+		}
+		lowering.groupExprs = append(lowering.groupExprs, compiled)
+
+		desc, ok := l.typeOfNode(expr)
+		if !ok {
+			desc = compiled.Type()
+		}
+		binding, _ := l.boundColumn(expr)
+		groupBinding := executor.OrdinalBinding{Ordinal: ordinal, Type: desc}
+		ref := aggregateOutputRef(fmt.Sprintf("__embed_group_%d", ordinal))
+		lowering.metadata.types[ref] = desc
+		lowering.metadata.bindings[ref] = groupBinding
+		key := l.groupExprKey(expr)
+		if key != "" {
+			if _, exists := lowering.groupRefs[key]; !exists {
+				lowering.groupRefs[key] = ref
+			}
+		}
+
+		lowering.outputShape.columns = append(lowering.outputShape.columns, shapeColumn{
+			relation: safeRelationName(binding),
+			name:     safeBindingName(binding),
+			typ:      desc,
+			binding:  binding,
+		})
+		lowering.outputCols = append(lowering.outputCols, planner.Column{
+			Name:         safeBindingName(binding),
+			Type:         desc,
+			RelationName: safeRelationName(binding),
+			Binding:      binding,
+		})
+	}
+
+	aggregateCalls := collectAggregateCalls(stmt)
+	for index, call := range aggregateCalls {
+		spec, desc, err := l.buildAggregateSpec(call, input.shape)
+		if err != nil {
+			return aggregateLowering{}, err
+		}
+
+		lowering.aggregateOps = append(lowering.aggregateOps, spec)
+		ordinal := len(lowering.groupExprs) + index
+		aggregateBinding := executor.OrdinalBinding{Ordinal: ordinal, Type: desc}
+		ref := aggregateOutputRef(fmt.Sprintf("__embed_agg_%d", ordinal))
+		lowering.metadata.types[ref] = desc
+		lowering.metadata.bindings[ref] = aggregateBinding
+		lowering.aggRefs[call] = ref
+		lowering.outputShape.columns = append(lowering.outputShape.columns, shapeColumn{typ: desc})
+		lowering.outputCols = append(lowering.outputCols, planner.Column{Type: desc})
+	}
+
+	lowering.metadata.base.shape = lowering.outputShape
+
+	return lowering, nil
+}
+
+func (l planLowerer) buildAggregateSpec(call *parser.FunctionCall, input rowShape) (executor.AggregateSpec, sqltypes.TypeDesc, error) {
+	if call == nil {
+		return executor.AggregateSpec{}, sqltypes.TypeDesc{}, internalError(call, "aggregate call is nil")
+	}
+	if strings.TrimSpace(call.SetQuantifier) != "" {
+		return executor.AggregateSpec{}, sqltypes.TypeDesc{}, featureError(call, "aggregate set quantifier %q is not supported in Phase 2 embed", call.SetQuantifier)
+	}
+
+	name := aggregateFunctionName(call)
+	desc, _ := l.typeOfNode(call)
+	spec := executor.AggregateSpec{Name: executor.AggregateName(name)}
+
+	if isCountStarCall(call) {
+		spec.CountStar = true
+		return spec, desc, nil
+	}
+	if len(call.Args) != 1 {
+		return executor.AggregateSpec{}, sqltypes.TypeDesc{}, internalError(call, "aggregate function %q is missing its argument", name)
+	}
+
+	compiled, err := compileExpression(l.bindings, l.types, l.store, l.tx, call.Args[0], input)
+	if err != nil {
+		return executor.AggregateSpec{}, sqltypes.TypeDesc{}, err
+	}
+	spec.Expr = compiled
+
+	return spec, desc, nil
+}
+
+func (l planLowerer) lowerAggregateProjection(stmt *parser.SelectStmt, input loweredPlan, lowering aggregateLowering) (loweredPlan, error) {
+	outputTypes, ok := l.selectOutputs(stmt)
+	if !ok {
+		return loweredPlan{}, internalError(stmt, "embed is missing SELECT output metadata")
+	}
+
+	exprs := make([]executor.CompiledExpr, 0, len(outputTypes))
+	columns := make([]planner.Column, 0, len(outputTypes))
+	outputCursor := 0
+	for _, item := range stmt.SelectList {
+		if item == nil || item.Expr == nil {
+			continue
+		}
+		if _, ok := item.Expr.(*parser.Star); ok {
+			return loweredPlan{}, featureError(item.Expr, "SELECT * is not allowed with GROUP BY or aggregate functions")
+		}
+
+		desc, ok := nextOutputType(outputTypes, &outputCursor)
+		if !ok {
+			return loweredPlan{}, internalError(item, "embed output metadata does not match the SELECT list")
+		}
+		if l.bindings != nil {
+			if binding, ok := l.bindings.Column(item.Expr); ok && binding != nil {
+				if matched, ok := input.shape.bindingForColumn(binding); ok {
+					desc = matched.Type
+				}
+			}
+		}
+
+		compiled, err := l.compileAggregateOutputExpr(item.Expr, lowering)
+		if err != nil {
+			return loweredPlan{}, err
+		}
+		exprs = append(exprs, compiled)
+		columns = append(columns, planner.Column{
+			Name: projectedColumnName(item),
+			Type: desc,
+		})
+	}
+
+	if outputCursor != len(outputTypes) {
+		return loweredPlan{}, internalError(stmt, "embed output metadata does not match the SELECT list")
+	}
+
+	return loweredPlan{
+		op:      executor.NewProject(input.op, exprs...),
+		shape:   shapeFromColumns(columns),
+		columns: columns,
+	}, nil
+}
+
+func (l planLowerer) compileAggregateOutputExpr(node parser.Node, lowering aggregateLowering) (executor.CompiledExpr, error) {
+	rewritten := l.rewriteAggregateExpr(node, lowering)
+	return executor.CompileExpr(rewritten, lowering.metadata)
+}
+
+func (l planLowerer) rewriteAggregateExpr(node parser.Node, lowering aggregateLowering) parser.Node {
+	if node == nil {
+		return nil
+	}
+	if call, ok := node.(*parser.FunctionCall); ok {
+		if ref, ok := lowering.aggRefs[call]; ok {
+			return ref
+		}
+	}
+	if ref, ok := lowering.groupRefs[l.groupExprKey(node)]; ok {
+		return ref
+	}
+
+	switch node := node.(type) {
+	case *parser.UnaryExpr:
+		clone := *node
+		clone.Operand = l.rewriteAggregateExpr(node.Operand, lowering)
+		return &clone
+	case *parser.BinaryExpr:
+		clone := *node
+		clone.Left = l.rewriteAggregateExpr(node.Left, lowering)
+		clone.Right = l.rewriteAggregateExpr(node.Right, lowering)
+		return &clone
+	case *parser.FunctionCall:
+		clone := *node
+		clone.Args = make([]parser.Node, 0, len(node.Args))
+		for _, arg := range node.Args {
+			clone.Args = append(clone.Args, l.rewriteAggregateExpr(arg, lowering))
+		}
+		return &clone
+	case *parser.CastExpr:
+		clone := *node
+		clone.Expr = l.rewriteAggregateExpr(node.Expr, lowering)
+		return &clone
+	case *parser.WhenClause:
+		clone := *node
+		clone.Condition = l.rewriteAggregateExpr(node.Condition, lowering)
+		clone.Result = l.rewriteAggregateExpr(node.Result, lowering)
+		return &clone
+	case *parser.CaseExpr:
+		clone := *node
+		clone.Operand = l.rewriteAggregateExpr(node.Operand, lowering)
+		clone.Whens = make([]*parser.WhenClause, 0, len(node.Whens))
+		for _, when := range node.Whens {
+			rewritten, _ := l.rewriteAggregateExpr(when, lowering).(*parser.WhenClause)
+			clone.Whens = append(clone.Whens, rewritten)
+		}
+		clone.Else = l.rewriteAggregateExpr(node.Else, lowering)
+		return &clone
+	case *parser.BetweenExpr:
+		clone := *node
+		clone.Expr = l.rewriteAggregateExpr(node.Expr, lowering)
+		clone.Lower = l.rewriteAggregateExpr(node.Lower, lowering)
+		clone.Upper = l.rewriteAggregateExpr(node.Upper, lowering)
+		return &clone
+	case *parser.InExpr:
+		clone := *node
+		clone.Expr = l.rewriteAggregateExpr(node.Expr, lowering)
+		if node.Query == nil {
+			clone.List = make([]parser.Node, 0, len(node.List))
+			for _, item := range node.List {
+				clone.List = append(clone.List, l.rewriteAggregateExpr(item, lowering))
+			}
+		}
+		return &clone
+	case *parser.LikeExpr:
+		clone := *node
+		clone.Expr = l.rewriteAggregateExpr(node.Expr, lowering)
+		clone.Pattern = l.rewriteAggregateExpr(node.Pattern, lowering)
+		clone.Escape = l.rewriteAggregateExpr(node.Escape, lowering)
+		return &clone
+	case *parser.IsExpr:
+		clone := *node
+		clone.Expr = l.rewriteAggregateExpr(node.Expr, lowering)
+		clone.Right = l.rewriteAggregateExpr(node.Right, lowering)
+		return &clone
+	default:
+		return node
+	}
+}
+
+func collectAggregateCalls(stmt *parser.SelectStmt) []*parser.FunctionCall {
+	calls := make([]*parser.FunctionCall, 0)
+	seen := make(map[*parser.FunctionCall]struct{})
+	for _, item := range stmt.SelectList {
+		if item == nil {
+			continue
+		}
+		collectAggregateCallsInExpr(item.Expr, &calls, seen)
+	}
+	collectAggregateCallsInExpr(stmt.Having, &calls, seen)
+	return calls
+}
+
+func collectAggregateCallsInExpr(node parser.Node, out *[]*parser.FunctionCall, seen map[*parser.FunctionCall]struct{}) {
+	switch node := node.(type) {
+	case nil:
+		return
+	case *parser.SelectStmt, *parser.SubqueryExpr, *parser.ExistsExpr:
+		return
+	case *parser.FunctionCall:
+		if isAggregateFunction(node) {
+			if _, ok := seen[node]; !ok {
+				seen[node] = struct{}{}
+				*out = append(*out, node)
+			}
+			return
+		}
+	}
+
+	forEachAggregateExprChild(node, func(child parser.Node) {
+		collectAggregateCallsInExpr(child, out, seen)
+	})
+}
+
+func aggregateOutputRef(name string) *parser.Identifier {
+	return &parser.Identifier{Name: name}
+}
+
+func (l planLowerer) typeOfNode(node parser.Node) (sqltypes.TypeDesc, bool) {
+	if l.types == nil || node == nil {
+		return sqltypes.TypeDesc{}, false
+	}
+
+	return l.types.Expr(node)
+}
+
+func (l planLowerer) boundColumn(node parser.Node) (*analyzer.ColumnBinding, bool) {
+	if l.bindings == nil || node == nil {
+		return nil, false
+	}
+
+	return l.bindings.Column(node)
 }
 
 func (l planLowerer) lowerSetOpQuery(query *parser.SetOpExpr) (loweredPlan, error) {
@@ -1169,24 +1539,17 @@ func validateSelectForEmbed(stmt *parser.SelectStmt) error {
 		return nil
 	case stmt.SetQuantifier != "":
 		return featureError(stmt, "DISTINCT queries are not supported in Phase 1 planner")
-	case len(stmt.GroupBy) != 0:
-		return featureError(stmt, "GROUP BY queries are not supported in Phase 1 planner")
-	case stmt.Having != nil:
-		return featureError(stmt, "HAVING queries are not supported in Phase 1 planner")
 	case len(stmt.OrderBy) != 0:
 		return featureError(stmt, "ORDER BY queries are not supported in Phase 1 planner")
-	}
-
-	for _, item := range stmt.SelectList {
-		if item == nil || item.Expr == nil {
-			continue
-		}
-		if containsAggregate(item.Expr) {
-			return featureError(item.Expr, "aggregate queries are not supported in Phase 1 planner")
-		}
+	case stmt.Having != nil && !selectUsesAggregation(stmt):
+		return featureError(stmt, "HAVING queries are not supported in Phase 1 planner")
 	}
 
 	return nil
+}
+
+func queryRequiresDirectLowering(query parser.QueryExpr) bool {
+	return queryContainsJoin(query) || queryContainsAggregate(query)
 }
 
 func queryContainsJoin(query parser.QueryExpr) bool {
@@ -1200,6 +1563,35 @@ func queryContainsJoin(query parser.QueryExpr) bool {
 	default:
 		return false
 	}
+}
+
+func queryContainsAggregate(query parser.QueryExpr) bool {
+	switch query := query.(type) {
+	case nil:
+		return false
+	case *parser.SelectStmt:
+		return selectUsesAggregation(query)
+	case *parser.SetOpExpr:
+		return queryContainsAggregate(query.Left) || queryContainsAggregate(query.Right)
+	default:
+		return false
+	}
+}
+
+func selectUsesAggregation(stmt *parser.SelectStmt) bool {
+	if stmt == nil {
+		return false
+	}
+	if len(stmt.GroupBy) != 0 {
+		return true
+	}
+	for _, item := range stmt.SelectList {
+		if item != nil && containsAggregateInQueryBlock(item.Expr) {
+			return true
+		}
+	}
+
+	return containsAggregateInQueryBlock(stmt.Having)
 }
 
 func selectContainsJoin(stmt *parser.SelectStmt) bool {
@@ -1249,70 +1641,223 @@ func projectedColumnName(item *parser.SelectItem) string {
 	}
 }
 
-func containsAggregate(node parser.Node) bool {
+func containsAggregateInQueryBlock(node parser.Node) bool {
 	switch node := node.(type) {
 	case nil:
 		return false
-	case *parser.UnaryExpr:
-		return containsAggregate(node.Operand)
-	case *parser.BinaryExpr:
-		return containsAggregate(node.Left) || containsAggregate(node.Right)
+	case *parser.SelectStmt, *parser.SubqueryExpr, *parser.ExistsExpr:
+		return false
 	case *parser.FunctionCall:
 		if isAggregateFunction(node) {
 			return true
 		}
-		for _, arg := range node.Args {
-			if containsAggregate(arg) {
-				return true
-			}
-		}
-		return false
-	case *parser.CastExpr:
-		return containsAggregate(node.Expr)
-	case *parser.WhenClause:
-		return containsAggregate(node.Condition) || containsAggregate(node.Result)
-	case *parser.CaseExpr:
-		if containsAggregate(node.Operand) || containsAggregate(node.Else) {
-			return true
-		}
-		for _, when := range node.Whens {
-			if containsAggregate(when) {
-				return true
-			}
-		}
-		return false
-	case *parser.BetweenExpr:
-		return containsAggregate(node.Expr) || containsAggregate(node.Lower) || containsAggregate(node.Upper)
-	case *parser.InExpr:
-		if containsAggregate(node.Expr) {
-			return true
-		}
-		for _, item := range node.List {
-			if containsAggregate(item) {
-				return true
-			}
-		}
-		return false
-	case *parser.LikeExpr:
-		return containsAggregate(node.Expr) || containsAggregate(node.Pattern) || containsAggregate(node.Escape)
-	case *parser.IsExpr:
-		return containsAggregate(node.Expr) || containsAggregate(node.Right)
-	default:
-		return false
 	}
+
+	found := false
+	forEachAggregateExprChild(node, func(child parser.Node) {
+		found = containsAggregateInQueryBlock(child) || found
+	})
+	return found
 }
 
 func isAggregateFunction(call *parser.FunctionCall) bool {
-	if call == nil || call.Name == nil || len(call.Name.Parts) == 0 {
+	return aggregateFunctionName(call) != ""
+}
+
+func aggregateFunctionName(call *parser.FunctionCall) string {
+	if call == nil || call.Name == nil || len(call.Name.Parts) != 1 {
+		return ""
+	}
+
+	switch strings.ToUpper(strings.TrimSpace(call.Name.Parts[0].Name)) {
+	case "AVG", "COUNT", "EVERY", "MAX", "MIN", "SUM":
+		return strings.ToUpper(strings.TrimSpace(call.Name.Parts[0].Name))
+	default:
+		return ""
+	}
+}
+
+func isCountStarCall(call *parser.FunctionCall) bool {
+	if aggregateFunctionName(call) != "COUNT" || len(call.Args) != 1 {
 		return false
 	}
 
-	switch strings.ToUpper(strings.TrimSpace(call.Name.Parts[len(call.Name.Parts)-1].Name)) {
-	case "AVG", "COUNT", "MAX", "MIN", "SUM":
-		return true
-	default:
-		return false
+	star, ok := call.Args[0].(*parser.Star)
+	return ok && star != nil && star.Qualifier == nil
+}
+
+func forEachAggregateExprChild(node parser.Node, visit func(parser.Node)) {
+	if node == nil || visit == nil {
+		return
 	}
+
+	switch node := node.(type) {
+	case *parser.UnaryExpr:
+		visit(node.Operand)
+	case *parser.BinaryExpr:
+		visit(node.Left)
+		visit(node.Right)
+	case *parser.FunctionCall:
+		for _, arg := range node.Args {
+			visit(arg)
+		}
+	case *parser.CastExpr:
+		visit(node.Expr)
+		if node.Type != nil {
+			for _, arg := range node.Type.Args {
+				visit(arg)
+			}
+		}
+	case *parser.WhenClause:
+		visit(node.Condition)
+		visit(node.Result)
+	case *parser.CaseExpr:
+		visit(node.Operand)
+		for _, when := range node.Whens {
+			visit(when)
+		}
+		visit(node.Else)
+	case *parser.BetweenExpr:
+		visit(node.Expr)
+		visit(node.Lower)
+		visit(node.Upper)
+	case *parser.InExpr:
+		visit(node.Expr)
+		if node.Query != nil {
+			return
+		}
+		for _, item := range node.List {
+			visit(item)
+		}
+	case *parser.LikeExpr:
+		visit(node.Expr)
+		visit(node.Pattern)
+		visit(node.Escape)
+	case *parser.IsExpr:
+		visit(node.Expr)
+		visit(node.Right)
+	case *parser.SelectItem:
+		visit(node.Expr)
+	case *parser.OrderByItem:
+		visit(node.Expr)
+	}
+}
+
+func (l planLowerer) groupExprKey(node parser.Node) string {
+	switch node := node.(type) {
+	case nil:
+		return ""
+	case *parser.Identifier, *parser.QualifiedName:
+		if binding, ok := l.boundColumn(node); ok {
+			return "column:" + bindingKey(binding)
+		}
+	case *parser.IntegerLiteral:
+		return "integer:" + strings.TrimSpace(node.Text)
+	case *parser.FloatLiteral:
+		return "float:" + strings.TrimSpace(node.Text)
+	case *parser.StringLiteral:
+		return "string:" + node.Value
+	case *parser.BoolLiteral:
+		return fmt.Sprintf("bool:%t", node.Value)
+	case *parser.NullLiteral:
+		return "null"
+	case *parser.ParamLiteral:
+		return "param:" + node.Text
+	case *parser.Star:
+		if node.Qualifier == nil {
+			return "star:*"
+		}
+		return "star:" + qualifiedNameString(node.Qualifier)
+	case *parser.UnaryExpr:
+		return "unary:" + node.Operator + "(" + l.groupExprKey(node.Operand) + ")"
+	case *parser.BinaryExpr:
+		return "binary:" + node.Operator + "(" + l.groupExprKey(node.Left) + "," + l.groupExprKey(node.Right) + ")"
+	case *parser.FunctionCall:
+		parts := make([]string, 0, len(node.Args)+2)
+		parts = append(parts, "call:"+qualifiedNameString(node.Name), "set:"+node.SetQuantifier)
+		for _, arg := range node.Args {
+			parts = append(parts, l.groupExprKey(arg))
+		}
+		return strings.Join(parts, "|")
+	case *parser.CastExpr:
+		return "cast(" + l.groupExprKey(node.Expr) + " as " + typeNameKey(node.Type) + ")"
+	case *parser.WhenClause:
+		return "when(" + l.groupExprKey(node.Condition) + "=>" + l.groupExprKey(node.Result) + ")"
+	case *parser.CaseExpr:
+		parts := []string{"case", l.groupExprKey(node.Operand)}
+		for _, when := range node.Whens {
+			parts = append(parts, l.groupExprKey(when))
+		}
+		parts = append(parts, l.groupExprKey(node.Else))
+		return strings.Join(parts, "|")
+	case *parser.BetweenExpr:
+		return "between(" + l.groupExprKey(node.Expr) + "," + l.groupExprKey(node.Lower) + "," + l.groupExprKey(node.Upper) + ")"
+	case *parser.SubqueryExpr:
+		return "subquery"
+	case *parser.ExistsExpr:
+		return "exists(subquery)"
+	case *parser.InExpr:
+		parts := []string{"in", l.groupExprKey(node.Expr)}
+		if node.Query != nil {
+			parts = append(parts, "subquery")
+			return strings.Join(parts, "|")
+		}
+		for _, item := range node.List {
+			parts = append(parts, l.groupExprKey(item))
+		}
+		return strings.Join(parts, "|")
+	case *parser.LikeExpr:
+		return "like(" + l.groupExprKey(node.Expr) + "," + l.groupExprKey(node.Pattern) + "," + l.groupExprKey(node.Escape) + ")"
+	case *parser.IsExpr:
+		return "is(" + l.groupExprKey(node.Expr) + "," + node.Predicate + "," + l.groupExprKey(node.Right) + ")"
+	case *parser.SelectStmt:
+		return "subquery"
+	default:
+		return fmt.Sprintf("%T", node)
+	}
+
+	return ""
+}
+
+func qualifiedNameString(name *parser.QualifiedName) string {
+	if name == nil {
+		return ""
+	}
+
+	parts := make([]string, 0, len(name.Parts))
+	for _, part := range name.Parts {
+		if part != nil {
+			parts = append(parts, part.Name)
+		}
+	}
+
+	return strings.Join(parts, ".")
+}
+
+func typeNameKey(node *parser.TypeName) string {
+	if node == nil {
+		return ""
+	}
+
+	parts := make([]string, 0, len(node.Args)+2)
+	parts = append(parts, qualifiedNameString(node.Qualifier))
+	for _, name := range node.Names {
+		if name != nil {
+			parts = append(parts, name.Name)
+		}
+	}
+	for _, arg := range node.Args {
+		parts = append(parts, fmt.Sprintf("%T", arg))
+	}
+	return strings.Join(parts, ".")
+}
+
+func bindingKey(binding *analyzer.ColumnBinding) string {
+	if binding == nil {
+		return ""
+	}
+
+	return fmt.Sprintf("%p", binding)
 }
 
 func evalLimitCount(node parser.Node) (uint64, error) {

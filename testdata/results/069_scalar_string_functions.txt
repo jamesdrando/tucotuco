@@ -1,0 +1,49 @@
+fixture: 069_scalar_string_functions
+
+statement 1:
+  sql:
+    SELECT
+      UPPER('tucotuco') AS upper_text,
+      LOWER('TUCOTUCO') AS lower_text,
+      TRIM(FROM '  tucotuco  ') AS trimmed_text,
+      TRIM(LEADING '.' FROM '..tucotuco') AS left_trimmed,
+      TRIM(TRAILING '.' FROM 'tucotuco..') AS right_trimmed,
+      SUBSTRING('tucotuco' FROM 2 FOR 4) AS slice_text,
+      POSITION('tu' IN 'tucotuco') AS first_pos,
+      CHAR_LENGTH('tucotuco') AS char_len,
+      CHARACTER_LENGTH('tucotuco') AS character_len,
+      OCTET_LENGTH('tucotuco') AS octet_len,
+      OVERLAY('abcdef' PLACING 'ZZ' FROM 2 FOR 3) AS overlay_text,
+      CONCAT('sql', '') AS concat_text
+  result:
+    query
+    columns:
+      [0] upper_text VARCHAR(8) NOT NULL
+      [1] lower_text VARCHAR(8) NOT NULL
+      [2] trimmed_text VARCHAR(12) NOT NULL
+      [3] left_trimmed VARCHAR(10) NOT NULL
+      [4] right_trimmed VARCHAR(10) NOT NULL
+      [5] slice_text VARCHAR(8) NOT NULL
+      [6] first_pos BIGINT NOT NULL
+      [7] char_len BIGINT NOT NULL
+      [8] character_len BIGINT NOT NULL
+      [9] octet_len BIGINT NOT NULL
+      [10] overlay_text VARCHAR(6) NOT NULL
+      [11] concat_text VARCHAR(3) NOT NULL
+    rows:
+      [0] "TUCOTUCO" | "tucotuco" | "tucotuco" | "tucotuco" | "tucotuco" | "ucot" | 1 | 8 | 8 | 8 | "aZZef" | "sql"
+
+statement 2:
+  sql:
+    SELECT
+      REGEXP_LIKE('abc123', '[0-9]+') AS has_digits,
+      REGEXP_REPLACE('abc123', '[0-9]+', 'x') AS stripped_text,
+      REGEXP_SUBSTR('abc123', '[0-9]+') AS matched_digits
+  result:
+    query
+    columns:
+      [0] has_digits BOOLEAN NOT NULL
+      [1] stripped_text VARCHAR(6) NOT NULL
+      [2] matched_digits VARCHAR(6) NOT NULL
+    rows:
+      [0] true | "abcx" | "123"

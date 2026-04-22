@@ -125,6 +125,51 @@ func TestProjectBuildsOutputColumnsAndFormatting(t *testing.T) {
 	}
 }
 
+func TestAggregateReportsChildrenShapeAndFormatting(t *testing.T) {
+	t.Parallel()
+
+	scan := NewScan(
+		storage.TableID{Schema: "public", Name: "orders"},
+		Column{Name: "customer_id", Type: mustTypeDesc(t, "INTEGER")},
+		Column{Name: "total", Type: mustTypeDesc(t, "INTEGER")},
+	)
+	stmt := mustSelect(t, "SELECT customer_id, COUNT(*) AS n FROM orders GROUP BY customer_id")
+	aggregate := NewAggregate(
+		scan,
+		stmt.GroupBy,
+		Column{Name: "customer_id", Type: mustTypeDesc(t, "INTEGER")},
+		Column{Name: "n", Type: mustTypeDesc(t, "BIGINT")},
+	)
+
+	if aggregate.Kind() != KindAggregate {
+		t.Fatalf("Kind() = %q, want %q", aggregate.Kind(), KindAggregate)
+	}
+	if got, want := aggregate.Children(), []Plan{scan}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Children() = %#v, want %#v", got, want)
+	}
+	if got, want := aggregate.Columns(), []Column{
+		{Name: "customer_id", Type: mustTypeDesc(t, "INTEGER")},
+		{Name: "n", Type: mustTypeDesc(t, "BIGINT")},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Columns() = %#v, want %#v", got, want)
+	}
+	if got, want := aggregate.String(), "Aggregate(groups=[customer_id])"; got != want {
+		t.Fatalf("String() = %q, want %q", got, want)
+	}
+
+	gotColumns := aggregate.Columns()
+	gotColumns[0].Name = "mutated"
+	if aggregate.OutputColumns[0].Name != "customer_id" {
+		t.Fatalf("Columns() returned shared backing slice")
+	}
+
+	gotChildren := aggregate.Children()
+	gotChildren[0] = nil
+	if children := aggregate.Children(); len(children) != 1 || children[0] != scan {
+		t.Fatalf("Children() returned shared backing slice")
+	}
+}
+
 func TestJoinReportsChildrenShapeAndFormatting(t *testing.T) {
 	t.Parallel()
 

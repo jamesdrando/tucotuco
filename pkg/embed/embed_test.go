@@ -404,6 +404,79 @@ func TestQueryExecutesSetOperationsEndToEnd(t *testing.T) {
 	}
 }
 
+func TestQueryExecutesAggregateSelectsEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	db := mustOpenDB(t, filepath.Join(t.TempDir(), "catalog.json"))
+	for _, sql := range []string{
+		"CREATE TABLE customers (id INTEGER NOT NULL, name VARCHAR(20) NOT NULL)",
+		"CREATE TABLE orders (id INTEGER NOT NULL, customer_id INTEGER, amount INTEGER, approved BOOLEAN)",
+		"INSERT INTO customers VALUES (1, 'alice')",
+		"INSERT INTO customers VALUES (2, 'bob')",
+		"INSERT INTO customers VALUES (3, 'carol')",
+		"INSERT INTO orders VALUES (10, 1, 10, TRUE)",
+		"INSERT INTO orders VALUES (11, 1, NULL, NULL)",
+		"INSERT INTO orders VALUES (12, 2, 7, FALSE)",
+		"INSERT INTO orders VALUES (13, 2, 3, TRUE)",
+	} {
+		if _, err := db.Exec(sql); err != nil {
+			t.Fatalf("Exec(%q) error = %v", sql, err)
+		}
+	}
+
+	globalEmpty, err := db.Query("SELECT COUNT(*), COUNT(amount), SUM(amount), AVG(amount), MIN(amount), MAX(amount), EVERY(approved) FROM orders WHERE customer_id = 99")
+	if err != nil {
+		t.Fatalf("Query(global empty aggregate) error = %v", err)
+	}
+	if got, want := globalEmpty.Rows, [][]any{{int64(0), int64(0), nil, nil, nil, nil, nil}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("globalEmpty.Rows = %#v, want %#v", got, want)
+	}
+	if got, want := globalEmpty.Columns[0].Type, "BIGINT NOT NULL"; got != want {
+		t.Fatalf("globalEmpty.Columns[0].Type = %q, want %q", got, want)
+	}
+
+	grouped, err := db.Query(
+		"SELECT c.name, COUNT(o.amount), SUM(o.amount), AVG(o.amount), MIN(o.amount), MAX(o.amount), EVERY(o.approved) " +
+			"FROM customers AS c LEFT JOIN orders AS o ON o.customer_id = c.id GROUP BY c.name",
+	)
+	if err != nil {
+		t.Fatalf("Query(grouped aggregates) error = %v", err)
+	}
+	if got, want := grouped.Rows, [][]any{
+		{"alice", int64(1), int64(10), "10", int32(10), int32(10), true},
+		{"bob", int64(2), int64(10), "5", int32(3), int32(7), false},
+		{"carol", int64(0), nil, nil, nil, nil, nil},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("grouped.Rows = %#v, want %#v", got, want)
+	}
+}
+
+func TestQueryExecutesGroupedExpressionsAndHavingEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	db := mustOpenDB(t, filepath.Join(t.TempDir(), "catalog.json"))
+	for _, sql := range []string{
+		"CREATE TABLE orders (id INTEGER NOT NULL, customer_id INTEGER)",
+		"INSERT INTO orders VALUES (10, 1)",
+		"INSERT INTO orders VALUES (11, 1)",
+		"INSERT INTO orders VALUES (12, 2)",
+		"INSERT INTO orders VALUES (13, 2)",
+		"INSERT INTO orders VALUES (14, 3)",
+	} {
+		if _, err := db.Exec(sql); err != nil {
+			t.Fatalf("Exec(%q) error = %v", sql, err)
+		}
+	}
+
+	result, err := db.Query("SELECT customer_id + 1 AS grp, COUNT(*) AS n FROM orders GROUP BY customer_id + 1 HAVING COUNT(*) >= 2")
+	if err != nil {
+		t.Fatalf("Query(grouped expression aggregate) error = %v", err)
+	}
+	if got, want := result.Rows, [][]any{{int32(2), int64(2)}, {int32(3), int64(2)}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("result.Rows = %#v, want %#v", got, want)
+	}
+}
+
 func TestQueryRejectsUnsupportedShapes(t *testing.T) {
 	t.Parallel()
 

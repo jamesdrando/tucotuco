@@ -1,0 +1,77 @@
+fixture: 071_aggregate_functions
+
+statement 1:
+  sql:
+    CREATE TABLE readings (group_id INTEGER NOT NULL, amount INTEGER NOT NULL, ok BOOLEAN NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO readings VALUES (1, 10, TRUE)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO readings VALUES (1, 20, TRUE)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    INSERT INTO readings VALUES (2, 30, FALSE)
+  result:
+    ok
+    rows_affected: 1
+
+statement 5:
+  sql:
+    SELECT
+      COUNT(*) AS row_count,
+      SUM(amount) AS total_amount,
+      AVG(amount) AS average_amount,
+      MIN(amount) AS min_amount,
+      MAX(amount) AS max_amount,
+      EVERY(ok) AS all_ok
+    FROM readings
+  result:
+    query
+    columns:
+      [0] row_count BIGINT NOT NULL
+      [1] total_amount INTEGER
+      [2] average_amount NUMERIC
+      [3] min_amount INTEGER
+      [4] max_amount INTEGER
+      [5] all_ok BOOLEAN
+    rows:
+      [0] 3 | 60 | "20" | 10 | 30 | false
+
+statement 6:
+  sql:
+    SELECT
+      group_id,
+      COUNT(*) AS row_count,
+      SUM(amount) AS total_amount,
+      AVG(amount) AS average_amount,
+      MIN(amount) AS min_amount,
+      MAX(amount) AS max_amount,
+      EVERY(ok) AS all_ok
+    FROM readings
+    GROUP BY group_id
+  result:
+    query
+    columns:
+      [0] group_id INTEGER NOT NULL
+      [1] row_count BIGINT NOT NULL
+      [2] total_amount INTEGER
+      [3] average_amount NUMERIC
+      [4] min_amount INTEGER
+      [5] max_amount INTEGER
+      [6] all_ok BOOLEAN
+    rows:
+      [0] 1 | 2 | 30 | "15" | 10 | 20 | true
+      [1] 2 | 1 | 30 | "30" | 30 | 30 | false

@@ -257,9 +257,11 @@
 - [x] **T-135** — Full NULL semantics: IS NULL, IS NOT NULL, three-valued logic everywhere `[parallel-safe]` `depends: M1`
   - Closed out the existing NULL / three-valued-logic semantics with SQL-92 golden coverage for `IS NULL`, `IS NOT NULL`, `IS UNKNOWN`, `IS [NOT] DISTINCT FROM`, and UNKNOWN-filter behavior in `067_null_logic`.
 
-- [ ] **T-136** — Full SQL-92 scalar function library (SPEC §8.6 string + numeric) `[parallel-safe]` `depends: M1`
+- [x] **T-136** — Full SQL-92 scalar function library (SPEC §8.6 string + numeric) `[parallel-safe]` `depends: M1`
+  - Added SQL-standard string/numeric scalar coverage across parser/analyzer/executor for `POSITION`, `SUBSTRING ... FROM ... [FOR ...]`, `TRIM` variants, `OVERLAY`, `REGEXP_*`, and the remaining math/trig/log/random functions, with SQL-92 golden fixtures `069_scalar_string_functions` and `070_scalar_numeric_functions`.
 
-- [ ] **T-137** — Full SQL-92 aggregate functions `[parallel-safe]` `depends: M1`
+- [x] **T-137** — Full SQL-92 aggregate functions `[parallel-safe]` `depends: M1`
+  - Enabled planner/embed aggregate queries for global and grouped `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, and `EVERY`, added `HAVING` support on top of the aggregate plan path, and closed the slice with SQL-92 golden fixture `071_aggregate_functions` plus refreshed aggregate-related planner-limit transcripts.
 
 - [ ] **T-138** — CREATE SCHEMA / DROP SCHEMA `[parallel-safe]` `depends: T-099`
 

@@ -18,61 +18,52 @@
 
 ## JUST DONE
 
-Completed `TASKS.md` T-132 through T-135 by landing SQL-92 set operations end-to-end and closing out the already-present `CASE`, `LIKE`, and NULL/three-valued-logic paths with compliance coverage.
+Completed `TASKS.md` T-136 and T-137 by extending the SQL-92 scalar/aggregate frontier across parser, analyzer, planner, executor, embed, and the golden compliance suite.
 
-- Parallelized the frontier with six discovery subagents and four implementation workers, keeping `internal/parser/` serial while independent SQL-92 compliance slices landed in parallel.
-- Added explicit query-expression support for:
-  - `UNION`, `INTERSECT`, and `EXCEPT`
-  - `ALL` and default `DISTINCT` set semantics
-  - standard precedence (`INTERSECT` before `UNION` / `EXCEPT`)
-  - parenthesized set-operation subqueries at the statement, derived-table, scalar-subquery, and `INSERT ... SELECT` seams
-- Extended analyzer/planner/embed support for:
-  - `QueryExpr` / `SetOpExpr` output-shape binding and common-supertype checking
-  - set-operation formatting in logical plans
-  - runtime lowering of set operations in `pkg/embed`
-  - end-to-end set-operation execution without regressing the `T-131` correlated-subquery baseline
-- Closed out existing SQL-92 expression support with new golden fixtures:
-  - `065_case_expressions`
-  - `066_like_patterns`
-  - `067_null_logic`
-  - `068_set_operations`
+- Parallelized the frontier with six bounded subagents, keeping `internal/parser/` and the final planner/embed integration serial while the scalar, aggregate, and fixture slices landed independently.
+- Added SQL-standard scalar-function coverage for:
+  - `POSITION`, `SUBSTRING ... FROM ... [FOR ...]`, `TRIM` variants, and `OVERLAY`
+  - `REGEXP_LIKE`, `REGEXP_REPLACE`, and `REGEXP_SUBSTR`
+  - `CEIL`, `FLOOR`, `ROUND`, `TRUNCATE`, `MOD`, `POWER`, `SQRT`, `EXP`, `LN`, `LOG`, `LOG10`, `SIN`, `COS`, `TAN`, `ASIN`, `ACOS`, `ATAN`, `ATAN2`, `SIGN`, and `RANDOM`
+- Extended analyzer typing and executor evaluation for the new scalar library and added SQL-92 golden fixtures:
+  - `069_scalar_string_functions`
+  - `070_scalar_numeric_functions`
+- Added planner/embed aggregate-query support for grouped and global `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, and `EVERY`, with `HAVING` lowered on top of the new aggregate plan path.
+- Added SQL-92 aggregate coverage in `071_aggregate_functions` and refreshed the older planner-limit transcripts `042`, `043`, `056`, `057`, and `059` to match the new aggregate baseline.
 - Revalidated focused coverage:
-  - `env GOCACHE=/tmp/tucotuco-go-test-fixtures1 go test ./compliance/sql92 -run 'TestGoldenScripts/(065_case_expressions|066_like_patterns|067_null_logic)$' -count=1`
-  - `env GOCACHE=/tmp/tucotuco-go-test-t132-live go test ./internal/parser ./internal/analyzer ./internal/planner ./pkg/embed ./compliance/sql92`
+  - `env GOCACHE=/tmp/tucotuco-go-test-t136t137-merge go test ./internal/parser ./internal/analyzer ./internal/planner ./internal/executor ./pkg/embed ./compliance/sql92 -count=1`
+  - `env GOCACHE=/tmp/tucotuco-go-test-sql92-t136t137 go test ./compliance/sql92 -count=1`
   - `git diff --check`
 - Revalidated repo-wide regression/build/lint coverage:
-  - `env GOCACHE=/tmp/tucotuco-go-test-all-t132batch go test ./...`
-  - `env GOCACHE=/tmp/tucotuco-go-build-all-t132batch go build ./...`
-  - `env XDG_CACHE_HOME=/tmp/tucotuco-xdg-cache-t132batch2 GOCACHE=/tmp/tucotuco-go-lint-t132batch2 golangci-lint run ./...`
+  - `env GOCACHE=/tmp/tucotuco-go-test-all-t136t137 go test ./...`
+  - `env GOCACHE=/tmp/tucotuco-go-build-all-t136t137 go build ./...`
+  - `env XDG_CACHE_HOME=/tmp/tucotuco-xdg-cache-all-t136t137 GOCACHE=/tmp/tucotuco-go-lint-all-t136t137 golangci-lint run ./...`
 
 ---
 
 ## NEXT
 
-**Task(s) to execute:** T-136
+**Task(s) to execute:** T-138
 
 **Instructions for the incoming agent:**
 
-1. Read `AGENTS.md` and `INDEX.md` again before starting the next SQL task.
-2. Start **T-136** as the first unchecked task in `TASKS.md`: extend the scalar function library in `internal/analyzer/typecheck.go` and `internal/executor/eval.go` on top of the now-stable query-expression baseline.
-3. Treat **T-137** as the immediate parallel-safe companion after the first planning pass; it remains unblocked by `M1` but shares planner/embed territory with any broader query-shape work.
-4. Preserve the new `T-132` / `T-131` query baseline while working forward:
-  - statement-level queries are now `parser.QueryExpr`, not just `*parser.SelectStmt`
-  - set operations now live in `SetOpExpr` with `INTERSECT` precedence over `UNION` / `EXCEPT`
-  - expression subqueries can correlate to outer scopes
-  - derived-table `FROM` subqueries are still isolated unless a future task explicitly adds `LATERAL`
-  - scalar subqueries now raise `SQLSTATE 21000` on multi-row results
-5. The current query-expression baseline now lives in:
-  - `internal/parser/parser.go` / `internal/parser/syntax.go`
-  - `internal/analyzer/resolve.go` / `internal/analyzer/typecheck.go` / `internal/analyzer/types.go`
-  - `internal/planner/builder.go` / `internal/planner/plan.go`
-  - `pkg/embed/query_exec.go` / `pkg/embed/lower.go`
-  - `testdata/results/065_*.txt` through `068_*.txt`
-6. `JOIN ... USING` and `NATURAL JOIN` are still explicit feature errors after `T-130`; do not silently broaden them while working on `T-136+`.
+1. Read `AGENTS.md` and `INDEX.md` again before starting the next DDL/name-resolution slice.
+2. Start **T-138** as the first unchecked task in `TASKS.md`: wire `CREATE SCHEMA` / `DROP SCHEMA` through parser, analyzer, embed, and the existing `internal/catalog` schema APIs.
+3. Treat **T-139** as the immediate parallel-safe companion after the first planning pass; it is unblocked by `T-060`, but keep `internal/catalog/` serial if both tasks move at once.
+4. Preserve the new SQL-92 baseline while working forward:
+  - grouped/global aggregate queries plus `HAVING` now plan and lower in `internal/planner` / `pkg/embed`
+  - scalar-function syntax now includes SQL-standard `POSITION`, `SUBSTRING`, `TRIM`, and `OVERLAY`
+  - aggregate-related planner-limit transcripts were refreshed in `042`, `043`, `056`, `057`, and `059`
+5. The current schema/name-resolution seams already live in:
+  - `internal/catalog/catalog.go` / `internal/catalog/memory.go` / `internal/catalog/persistence.go`
+  - `internal/analyzer/resolve.go`
+  - `pkg/embed/dml_ddl.go`
+  - `internal/parser/syntax.go` / `internal/parser/parser.go`
+6. `JOIN ... USING` and `NATURAL JOIN` remain explicit feature errors after `T-130`, and `SIMILAR TO` is still unowned beyond the completed `T-136` scalar-function slice; do not broaden either incidentally while landing schema work.
 
-**Spec references:** `SPEC.md` §8.6 (next), `SPEC.md` §8.5 and `SPEC.md` §8.2 (new baseline)
+**Spec references:** `SPEC.md` §5.1 (DDL statement set), `SPEC.md` §8.6 (new scalar/aggregate baseline)
 
-**Estimated parallelism available:** 6 streams across `T-136` through `T-138` after the first planning pass
+**Estimated parallelism available:** 6 streams across `T-138` and `T-139` after the first planning pass
 
 ---
 
@@ -88,7 +79,7 @@ _None._
 |-----------|--------|----------------|
 | M0 — Repo Ready | ✅ Complete | None |
 | M1 — SQL-92 Core | ✅ Complete | None (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-060`, `T-061`, `T-062`, `T-063`, `T-070`, `T-071`, `T-072`, `T-073`, `T-080`, `T-081`, `T-082`, `T-090`, `T-091`, `T-092`, `T-093`, `T-094`, `T-095`, `T-096`, `T-097`, `T-098`, `T-099`, `T-100`, `T-101`, `T-102`, `T-110`, `T-111`, `T-112`, `T-113` complete) |
-| M2 — SQL-92 Full + Storage | 🟨 In progress | T-128 to T-171 (`T-120`, `T-121`, `T-122`, `T-123`, `T-124`, `T-125`, `T-126`, `T-127` complete) |
+| M2 — SQL-92 Full + Storage | 🟨 In progress | T-138 to T-171 (`T-120` to `T-128`, `T-130` to `T-137` complete) |
 | M3 — SQL:1999 | 🔲 Not started | T-200 to T-261 |
 | M4 — SQL:2003 + Wire | 🔲 Not started | T-300 to T-312 |
 | M5 — SQL:2008 | 🔲 Not started | T-350 to T-356 |
@@ -140,3 +131,4 @@ _None._
 | #035 | 2026-04-22 | Codex | Completed T-130 | Added logical/planner/executor/embed support for `INNER`/`LEFT`/`RIGHT`/`FULL`/comma-CROSS joins, preserved joined-column provenance and outer-join nullability through lowering, updated SQL-92 join/comma fixtures plus explicit `USING`/`NATURAL` feature errors, passed focused and repo-wide tests/build/lint, and advanced the baton to `T-131` |
 | #036 | 2026-04-22 | Codex | Completed T-131 | Added parser/analyzer/runtime support for scalar/`EXISTS`/`IN`/correlated subqueries, extended embed lowering with subquery execution and scalar-cardinality diagnostics, added SQL-92 fixtures `061_064`, passed focused and repo-wide tests/build/lint, and advanced the baton to `T-132` |
 | #037 | 2026-04-22 | Codex | Completed T-132 through T-135 | Added end-to-end `UNION`/`INTERSECT`/`EXCEPT` query expressions plus SQL-92 fixtures `065_068` for CASE, LIKE, NULL logic, and set operations, passed focused and repo-wide tests/build/lint, and advanced the baton to `T-136` |
+| #038 | 2026-04-22 | Codex | Completed T-136 and T-137 | Added SQL-standard scalar-function coverage plus grouped/global aggregate query support, refreshed SQL-92 fixtures `069_071` and the older aggregate planner-limit transcripts, passed focused and repo-wide tests/build/lint, and advanced the baton to `T-138` |

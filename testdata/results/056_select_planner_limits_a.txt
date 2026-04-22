@@ -19,17 +19,21 @@ statement 3:
   sql:
     SELECT id FROM widgets GROUP BY id
   result:
-    error
-    diagnostics:
-      [0] ERROR [SQLSTATE 0A000] at 1:1 (offset 0): GROUP BY queries are not supported in Phase 1 planner
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      <empty>
 
 statement 4:
   sql:
     SELECT id FROM widgets HAVING id > 0
   result:
-    error
-    diagnostics:
-      [0] ERROR [SQLSTATE 0A000] at 1:1 (offset 0): HAVING queries are not supported in Phase 1 planner
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      <empty>
 
 statement 5:
   sql:

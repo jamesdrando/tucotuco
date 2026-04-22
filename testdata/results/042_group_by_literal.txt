@@ -4,6 +4,8 @@ statement 1:
   sql:
     SELECT 1 GROUP BY 1
   result:
-    error
-    diagnostics:
-      [0] ERROR [SQLSTATE 0A000] at 1:1 (offset 0): GROUP BY queries are not supported in Phase 1 planner
+    query
+    columns:
+      [0] <unnamed> INTEGER NOT NULL
+    rows:
+      [0] 1

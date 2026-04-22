@@ -38,6 +38,8 @@ statement 5:
   sql:
     SELECT COUNT(*) FROM widgets
   result:
-    error
-    diagnostics:
-      [0] ERROR [SQLSTATE 0A000] at 1:8 (offset 7): aggregate queries are not supported in Phase 1 planner
+    query
+    columns:
+      [0] <unnamed> BIGINT NOT NULL
+    rows:
+      [0] 0

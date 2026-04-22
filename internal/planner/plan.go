@@ -20,6 +20,8 @@ const (
 	KindFilter Kind = "Filter"
 	// KindProject identifies a logical projection.
 	KindProject Kind = "Project"
+	// KindAggregate identifies a logical grouping and aggregation step.
+	KindAggregate Kind = "Aggregate"
 	// KindJoin identifies a logical join.
 	KindJoin Kind = "Join"
 	// KindSetOp identifies a logical set-operation node.
@@ -243,6 +245,62 @@ func (p *Project) String() string {
 	return formatPlan(KindProject, "columns=["+formatProjectionOutputs(p.Projections)+"]")
 }
 
+// Aggregate groups rows and computes aggregate query-block results.
+type Aggregate struct {
+	// Input is the child plan whose rows feed grouping and aggregation.
+	Input Plan
+	// GroupBy contains the analyzed grouping expressions in order.
+	GroupBy []parser.Node
+	// OutputColumns are the visible columns emitted by the aggregate step.
+	OutputColumns []Column
+}
+
+// NewAggregate constructs a logical aggregate node.
+func NewAggregate(input Plan, groupBy []parser.Node, columns ...Column) *Aggregate {
+	return &Aggregate{
+		Input:         input,
+		GroupBy:       append([]parser.Node(nil), groupBy...),
+		OutputColumns: append([]Column(nil), columns...),
+	}
+}
+
+func (*Aggregate) plan() {}
+
+// Kind reports the operator kind.
+func (*Aggregate) Kind() Kind {
+	return KindAggregate
+}
+
+// Children reports the aggregate input.
+func (a *Aggregate) Children() []Plan {
+	if a == nil || a.Input == nil {
+		return nil
+	}
+
+	return []Plan{a.Input}
+}
+
+// Columns reports the aggregate output schema.
+func (a *Aggregate) Columns() []Column {
+	if a == nil {
+		return nil
+	}
+
+	return append([]Column(nil), a.OutputColumns...)
+}
+
+// String returns a stable one-line rendering of the aggregate.
+func (a *Aggregate) String() string {
+	if a == nil {
+		return KindAggregate.String()
+	}
+	if len(a.GroupBy) == 0 {
+		return KindAggregate.String()
+	}
+
+	return formatPlan(KindAggregate, "groups=["+formatExprList(a.GroupBy)+"]")
+}
+
 // Join combines rows from two child plans.
 type Join struct {
 	// Left is the left child plan.
@@ -462,6 +520,15 @@ func formatColumns(columns []Column) string {
 	parts := make([]string, 0, len(columns))
 	for _, column := range columns {
 		parts = append(parts, column.String())
+	}
+
+	return strings.Join(parts, ", ")
+}
+
+func formatExprList(nodes []parser.Node) string {
+	parts := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		parts = append(parts, formatExpr(node))
 	}
 
 	return strings.Join(parts, ", ")

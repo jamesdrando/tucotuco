@@ -120,6 +120,80 @@ func TestTypeCheckerAssignsCaseAndCastTypes(t *testing.T) {
 	}
 }
 
+func TestTypeCheckerAssignsMissingScalarFunctionTypes(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT POSITION('x', code), OVERLAY(code, status, 1), REGEXP_LIKE(code, status), REGEXP_REPLACE(code, 'a', status), REGEXP_SUBSTR(code, status), CEIL(total), FLOOR(total), ROUND(total, 0), TRUNCATE(total, 0), MOD(total, 2), POWER(total, 2), SQRT(total), EXP(total), LN(total), LOG(10, total), LOG10(total), SIN(total), COS(total), TAN(total), ASIN(total), ACOS(total), ATAN(total), ATAN2(total, 2), SIGN(total) FROM orders")
+
+	typed, diags := typeCheckSQL(t, cat, script)
+	if len(diags) != 0 {
+		t.Fatalf("CheckScript() diagnostics = %#v, want none", diags)
+	}
+
+	stmt := script.Nodes[0].(*parser.SelectStmt)
+	wantOutputs := []sqltypes.TypeDesc{
+		mustAnalyzerTypeDesc(t, "BIGINT"),
+		mustAnalyzerTypeDesc(t, "VARCHAR(12)"),
+		mustAnalyzerTypeDesc(t, "BOOLEAN"),
+		mustAnalyzerTypeDesc(t, "VARCHAR(12)"),
+		mustAnalyzerTypeDesc(t, "VARCHAR(12)"),
+		mustAnalyzerTypeDesc(t, "INTEGER"),
+		mustAnalyzerTypeDesc(t, "INTEGER"),
+		mustAnalyzerTypeDesc(t, "INTEGER"),
+		mustAnalyzerTypeDesc(t, "INTEGER"),
+		mustAnalyzerTypeDesc(t, "INTEGER"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION"),
+		mustAnalyzerTypeDesc(t, "INTEGER"),
+	}
+	if got, ok := typed.Select(stmt); !ok || !equalTypeSlices(got, wantOutputs) {
+		t.Fatalf("Select(stmt) = (%#v, %t), want %#v", got, ok, wantOutputs)
+	}
+}
+
+func TestTypeCheckerAssignsNonNullScalarFunctionTypes(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT RANDOM(), POSITION('a', 'abc'), OVERLAY('abc', 'x', 1, 1), REGEXP_LIKE('abc', 'a', 'i'), REGEXP_REPLACE('abc', 'a', 'x', 'i'), REGEXP_SUBSTR('abc', 'a', 'i'), CEIL(1.2), ROUND(2.5), TRUNCATE(2.5), MOD(5, 2), POWER(2, 3), LOG(100) FROM orders")
+
+	typed, diags := typeCheckSQL(t, cat, script)
+	if len(diags) != 0 {
+		t.Fatalf("CheckScript() diagnostics = %#v, want none", diags)
+	}
+
+	stmt := script.Nodes[0].(*parser.SelectStmt)
+	wantOutputs := []sqltypes.TypeDesc{
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION NOT NULL"),
+		mustAnalyzerTypeDesc(t, "BIGINT NOT NULL"),
+		mustAnalyzerTypeDesc(t, "VARCHAR(3) NOT NULL"),
+		mustAnalyzerTypeDesc(t, "BOOLEAN NOT NULL"),
+		mustAnalyzerTypeDesc(t, "VARCHAR(3) NOT NULL"),
+		mustAnalyzerTypeDesc(t, "VARCHAR(3) NOT NULL"),
+		mustAnalyzerTypeDesc(t, "NUMERIC(2,1) NOT NULL"),
+		mustAnalyzerTypeDesc(t, "NUMERIC(2,1) NOT NULL"),
+		mustAnalyzerTypeDesc(t, "NUMERIC(2,1) NOT NULL"),
+		mustAnalyzerTypeDesc(t, "INTEGER NOT NULL"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION NOT NULL"),
+		mustAnalyzerTypeDesc(t, "DOUBLE PRECISION NOT NULL"),
+	}
+	if got, ok := typed.Select(stmt); !ok || !equalTypeSlices(got, wantOutputs) {
+		t.Fatalf("Select(stmt) = (%#v, %t), want %#v", got, ok, wantOutputs)
+	}
+}
+
 func TestTypeCheckerContextualizesNullAssignments(t *testing.T) {
 	t.Parallel()
 
@@ -189,6 +263,42 @@ func TestTypeCheckerReportsAssignmentMismatch(t *testing.T) {
 		t.Fatalf("diagnostic SQLSTATE = %q, want %q", diags[0].SQLState, sqlStateDatatypeMismatch)
 	}
 	if diags[0].Message != `UPDATE value for column "total" must be coercible to INTEGER, found VARCHAR(1) NOT NULL` {
+		t.Fatalf("diagnostic message = %q", diags[0].Message)
+	}
+}
+
+func TestTypeCheckerReportsScalarFunctionArityMismatch(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT RANDOM(1) FROM orders")
+
+	_, diags := typeCheckSQL(t, cat, script)
+	if len(diags) != 1 {
+		t.Fatalf("len(diagnostics) = %d, want 1", len(diags))
+	}
+	if diags[0].SQLState != sqlStateUndefinedFunc {
+		t.Fatalf("diagnostic SQLSTATE = %q, want %q", diags[0].SQLState, sqlStateUndefinedFunc)
+	}
+	if diags[0].Message != `function "random" does not exist` {
+		t.Fatalf("diagnostic message = %q", diags[0].Message)
+	}
+}
+
+func TestTypeCheckerReportsScalarFunctionIntegerArgumentMismatch(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT ROUND(total, 1.5) FROM orders")
+
+	_, diags := typeCheckSQL(t, cat, script)
+	if len(diags) != 1 {
+		t.Fatalf("len(diagnostics) = %d, want 1", len(diags))
+	}
+	if diags[0].SQLState != sqlStateDatatypeMismatch {
+		t.Fatalf("diagnostic SQLSTATE = %q, want %q", diags[0].SQLState, sqlStateDatatypeMismatch)
+	}
+	if diags[0].Message != "ROUND precision must be an integer type, found NUMERIC(2,1) NOT NULL" {
 		t.Fatalf("diagnostic message = %q", diags[0].Message)
 	}
 }

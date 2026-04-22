@@ -93,6 +93,16 @@ func (p *buildPass) buildSelect(stmt *parser.SelectStmt) Plan {
 	if !ok {
 		return nil
 	}
+	if p.selectRequiresAggregate(stmt) {
+		columns, ok := p.aggregateColumns(stmt, outputs)
+		if !ok {
+			return nil
+		}
+		input = NewAggregate(input, stmt.GroupBy, columns...)
+		if stmt.Having != nil {
+			input = NewFilter(input, stmt.Having)
+		}
+	}
 
 	project := &Project{Input: input}
 	p.outputTypes = outputs
@@ -144,25 +154,9 @@ func (p *buildPass) validateSelect(stmt *parser.SelectStmt) bool {
 	case stmt.SetQuantifier != "":
 		p.addFeatureError(stmt, "DISTINCT queries are not supported in Phase 1 planner")
 		return false
-	case len(stmt.GroupBy) != 0:
-		p.addFeatureError(stmt, "GROUP BY queries are not supported in Phase 1 planner")
-		return false
-	case stmt.Having != nil:
-		p.addFeatureError(stmt, "HAVING queries are not supported in Phase 1 planner")
-		return false
 	case len(stmt.OrderBy) != 0:
 		p.addFeatureError(stmt, "ORDER BY queries are not supported in Phase 1 planner")
 		return false
-	}
-
-	for _, item := range stmt.SelectList {
-		if item == nil || item.Expr == nil {
-			continue
-		}
-		if containsAggregate(item.Expr) {
-			p.addFeatureError(item.Expr, "aggregate queries are not supported in Phase 1 planner")
-			return false
-		}
 	}
 
 	return true
@@ -620,6 +614,64 @@ func (p *buildPass) queryColumns(query parser.QueryExpr, outputs []sqltypes.Type
 	return relationColumnsWithTypes(relation, outputs)
 }
 
+func (p *buildPass) selectRequiresAggregate(stmt *parser.SelectStmt) bool {
+	if stmt == nil {
+		return false
+	}
+	if len(stmt.GroupBy) != 0 || containsAggregate(stmt.Having) {
+		return true
+	}
+
+	for _, item := range stmt.SelectList {
+		if item != nil && containsAggregate(item.Expr) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (p *buildPass) aggregateColumns(stmt *parser.SelectStmt, outputs []sqltypes.TypeDesc) ([]Column, bool) {
+	if stmt == nil {
+		return nil, true
+	}
+
+	columns := make([]Column, 0, len(outputs))
+	cursor := 0
+	for _, item := range stmt.SelectList {
+		if item == nil || item.Expr == nil {
+			continue
+		}
+		if _, ok := item.Expr.(*parser.Star); ok {
+			p.addFeatureError(item.Expr, "SELECT * is not allowed with GROUP BY or aggregate functions")
+			return nil, false
+		}
+		if cursor >= len(outputs) {
+			p.addInternalError(item, "planner output metadata does not match the SELECT list")
+			return nil, false
+		}
+
+		column := Column{
+			Name: projectedColumnName(item),
+			Type: outputs[cursor],
+		}
+		if binding, ok := p.boundColumn(item.Expr); ok {
+			column.Binding = binding
+			column.RelationName = safeBindingRelation(binding)
+		}
+
+		columns = append(columns, column)
+		cursor++
+	}
+
+	if cursor != len(outputs) {
+		p.addInternalError(stmt, "planner output metadata does not match the SELECT list")
+		return nil, false
+	}
+
+	return columns, true
+}
+
 func mergeBoundColumn(column Column, binding *analyzer.ColumnBinding) Column {
 	column.Binding = binding
 	column.RelationName = safeBindingRelation(binding)
@@ -705,13 +757,13 @@ func containsAggregate(node parser.Node) bool {
 }
 
 func isAggregateFunction(call *parser.FunctionCall) bool {
-	if call == nil || call.Name == nil || len(call.Name.Parts) == 0 {
+	if call == nil || call.Name == nil || len(call.Name.Parts) != 1 {
 		return false
 	}
 
 	name := call.Name.Parts[len(call.Name.Parts)-1].Name
 	switch strings.ToUpper(name) {
-	case "AVG", "COUNT", "MAX", "MIN", "SUM":
+	case "AVG", "COUNT", "EVERY", "MAX", "MIN", "SUM":
 		return true
 	default:
 		return false

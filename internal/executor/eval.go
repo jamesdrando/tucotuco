@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"math/rand/v2"
 	"regexp"
 	"strconv"
 	"strings"
@@ -297,18 +298,68 @@ func (c compiler) compileFunctionCall(node *parser.FunctionCall) (CompiledExpr, 
 	switch name {
 	case "ABS":
 		return c.compileAbsCall(desc, args)
+	case "ACOS":
+		return c.compileApproxUnaryNumericCall("ACOS", desc, args, math.Acos)
+	case "ASIN":
+		return c.compileApproxUnaryNumericCall("ASIN", desc, args, math.Asin)
+	case "ATAN":
+		return c.compileApproxUnaryNumericCall("ATAN", desc, args, math.Atan)
+	case "ATAN2":
+		return c.compileApproxBinaryNumericCall("ATAN2", desc, args, math.Atan2)
 	case "LOWER":
 		return c.compileCaseFoldCall(desc, args, strings.ToLower)
 	case "UPPER":
 		return c.compileCaseFoldCall(desc, args, strings.ToUpper)
+	case "CEIL":
+		return c.compileCeilFloorCall("CEIL", desc, args, true)
+	case "COS":
+		return c.compileApproxUnaryNumericCall("COS", desc, args, math.Cos)
 	case "LTRIM":
 		return c.compileTrimCall(desc, args, trimLeft)
 	case "RTRIM":
 		return c.compileTrimCall(desc, args, trimRight)
 	case "TRIM":
 		return c.compileTrimCall(desc, args, trimBoth)
+	case "EXP":
+		return c.compileApproxUnaryNumericCall("EXP", desc, args, math.Exp)
+	case "FLOOR":
+		return c.compileCeilFloorCall("FLOOR", desc, args, false)
+	case "LN":
+		return c.compileApproxUnaryNumericCall("LN", desc, args, math.Log)
+	case "LOG":
+		return c.compileLogCall(desc, args)
+	case "LOG10":
+		return c.compileApproxUnaryNumericCall("LOG10", desc, args, math.Log10)
+	case "MOD":
+		return c.compileModCall(desc, args)
 	case "SUBSTRING":
 		return c.compileSubstringCall(desc, args)
+	case "OVERLAY":
+		return c.compileOverlayCall(desc, args)
+	case "POSITION":
+		return c.compilePositionCall(desc, args)
+	case "POWER":
+		return c.compileApproxBinaryNumericCall("POWER", desc, args, math.Pow)
+	case "RANDOM":
+		return compileRandomCall(desc, args)
+	case "REGEXP_LIKE":
+		return c.compileRegexpLikeCall(desc, args)
+	case "REGEXP_REPLACE":
+		return c.compileRegexpReplaceCall(desc, args)
+	case "REGEXP_SUBSTR":
+		return c.compileRegexpSubstrCall(desc, args)
+	case "ROUND":
+		return c.compileRoundCall("ROUND", desc, args, false)
+	case "SIGN":
+		return c.compileSignCall(desc, args)
+	case "SIN":
+		return c.compileApproxUnaryNumericCall("SIN", desc, args, math.Sin)
+	case "SQRT":
+		return c.compileApproxUnaryNumericCall("SQRT", desc, args, math.Sqrt)
+	case "TAN":
+		return c.compileApproxUnaryNumericCall("TAN", desc, args, math.Tan)
+	case "TRUNCATE":
+		return c.compileRoundCall("TRUNCATE", desc, args, true)
 	case "CONCAT":
 		return c.compileConcatCall(desc, args)
 	case "CHAR_LENGTH", "CHARACTER_LENGTH":
@@ -966,6 +1017,13 @@ const (
 	trimRight
 )
 
+type roundMode uint8
+
+const (
+	roundHalfAwayFromZero roundMode = iota
+	roundTowardZero
+)
+
 func (c compiler) typeOf(node parser.Node) (sqltypes.TypeDesc, bool) {
 	if c.metadata == nil || node == nil {
 		return sqltypes.TypeDesc{}, false
@@ -1472,6 +1530,831 @@ func compileCurrentTimestampCall(desc sqltypes.TypeDesc, args []CompiledExpr) (C
 			return sqltypes.DateTimeValue(value), nil
 		},
 	}, nil
+}
+
+func (c compiler) compilePositionCall(desc sqltypes.TypeDesc, args []CompiledExpr) (CompiledExpr, error) {
+	if len(args) != 2 {
+		return CompiledExpr{}, fmt.Errorf("%w: POSITION expects 2 arguments", ErrUnsupportedExpression)
+	}
+	if isUnknownTypeDesc(desc) {
+		desc = sqltypes.TypeDesc{Kind: sqltypes.TypeKindBigInt, Nullable: true}
+	}
+
+	return CompiledExpr{
+		typ: desc,
+		eval: func(row Row) (sqltypes.Value, error) {
+			searchValue, err := args[0].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			textValue, err := args[1].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			if searchValue.IsNull() || textValue.IsNull() {
+				return sqltypes.NullValue(), nil
+			}
+
+			search, err := stringFromValue(searchValue, "POSITION search")
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			text, err := stringFromValue(textValue, "POSITION text")
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			offset := strings.Index(text, search)
+			if offset < 0 {
+				return sqltypes.Int64Value(0), nil
+			}
+
+			position := int64(utf8.RuneCountInString(text[:offset]) + 1)
+			return sqltypes.Int64Value(position), nil
+		},
+	}, nil
+}
+
+func (c compiler) compileOverlayCall(desc sqltypes.TypeDesc, args []CompiledExpr) (CompiledExpr, error) {
+	if len(args) < 3 || len(args) > 4 {
+		return CompiledExpr{}, fmt.Errorf("%w: OVERLAY expects 3 or 4 arguments", ErrUnsupportedExpression)
+	}
+	if isUnknownTypeDesc(desc) {
+		desc = args[0].typ
+	}
+
+	return CompiledExpr{
+		typ: desc,
+		eval: func(row Row) (sqltypes.Value, error) {
+			textValue, err := args[0].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			placingValue, err := args[1].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			startValue, err := args[2].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			if textValue.IsNull() || placingValue.IsNull() || startValue.IsNull() {
+				return sqltypes.NullValue(), nil
+			}
+
+			text, err := stringFromValue(textValue, "OVERLAY text")
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			placing, err := stringFromValue(placingValue, "OVERLAY placing")
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			start, err := int64FromNumericValue(startValue, args[2].typ, "OVERLAY start")
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			textRunes := []rune(text)
+			placingRunes := []rune(placing)
+			startIndex := int(start - 1)
+			if startIndex < 0 {
+				startIndex = 0
+			}
+			if startIndex > len(textRunes) {
+				startIndex = len(textRunes)
+			}
+
+			length := int64(len(placingRunes))
+			if len(args) == 4 {
+				lengthValue, err := args[3].Eval(row)
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+				if lengthValue.IsNull() {
+					return sqltypes.NullValue(), nil
+				}
+
+				length, err = int64FromNumericValue(lengthValue, args[3].typ, "OVERLAY length")
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+				if length < 0 {
+					return sqltypes.Value{}, fmt.Errorf("%w: OVERLAY length %d", ErrInvalidExpressionType, length)
+				}
+			}
+
+			endIndex := startIndex + int(length)
+			if endIndex < startIndex {
+				endIndex = startIndex
+			}
+			if endIndex > len(textRunes) {
+				endIndex = len(textRunes)
+			}
+
+			result := string(textRunes[:startIndex]) + placing + string(textRunes[endIndex:])
+			return coerceResultValue(sqltypes.StringValue(result), inferStringLiteralType(&parser.StringLiteral{Value: result}), desc)
+		},
+	}, nil
+}
+
+func (c compiler) compileRegexpLikeCall(desc sqltypes.TypeDesc, args []CompiledExpr) (CompiledExpr, error) {
+	if len(args) < 2 || len(args) > 3 {
+		return CompiledExpr{}, fmt.Errorf("%w: REGEXP_LIKE expects 2 or 3 arguments", ErrUnsupportedExpression)
+	}
+	if isUnknownTypeDesc(desc) {
+		desc = booleanDesc(true)
+	}
+
+	return CompiledExpr{
+		typ: desc,
+		eval: func(row Row) (sqltypes.Value, error) {
+			text, matcher, err := evalRegexpMatchInputs(row, args)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			if matcher == nil {
+				return sqltypes.NullValue(), nil
+			}
+
+			return sqltypes.BoolValue(matcher.MatchString(text)), nil
+		},
+	}, nil
+}
+
+func (c compiler) compileRegexpReplaceCall(desc sqltypes.TypeDesc, args []CompiledExpr) (CompiledExpr, error) {
+	if len(args) < 3 || len(args) > 4 {
+		return CompiledExpr{}, fmt.Errorf("%w: REGEXP_REPLACE expects 3 or 4 arguments", ErrUnsupportedExpression)
+	}
+	if isUnknownTypeDesc(desc) {
+		desc = args[0].typ
+	}
+
+	return CompiledExpr{
+		typ: desc,
+		eval: func(row Row) (sqltypes.Value, error) {
+			textValue, err := args[0].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			patternValue, err := args[1].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			replacementValue, err := args[2].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			if textValue.IsNull() || patternValue.IsNull() || replacementValue.IsNull() {
+				return sqltypes.NullValue(), nil
+			}
+
+			text, err := stringFromValue(textValue, "REGEXP_REPLACE text")
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			pattern, err := stringFromValue(patternValue, "REGEXP_REPLACE pattern")
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			replacement, err := stringFromValue(replacementValue, "REGEXP_REPLACE replacement")
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			flags := ""
+			if len(args) == 4 {
+				flagsValue, err := args[3].Eval(row)
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+				if flagsValue.IsNull() {
+					return sqltypes.NullValue(), nil
+				}
+
+				flags, err = stringFromValue(flagsValue, "REGEXP_REPLACE flags")
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+			}
+
+			matcher, err := compileRegexpPattern(pattern, flags)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			result := matcher.ReplaceAllString(text, replacement)
+			return coerceResultValue(sqltypes.StringValue(result), inferStringLiteralType(&parser.StringLiteral{Value: result}), desc)
+		},
+	}, nil
+}
+
+func (c compiler) compileRegexpSubstrCall(desc sqltypes.TypeDesc, args []CompiledExpr) (CompiledExpr, error) {
+	if len(args) < 2 || len(args) > 3 {
+		return CompiledExpr{}, fmt.Errorf("%w: REGEXP_SUBSTR expects 2 or 3 arguments", ErrUnsupportedExpression)
+	}
+	if isUnknownTypeDesc(desc) {
+		desc = args[0].typ
+	}
+
+	return CompiledExpr{
+		typ: desc,
+		eval: func(row Row) (sqltypes.Value, error) {
+			text, matcher, err := evalRegexpMatchInputs(row, args)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			if matcher == nil {
+				return sqltypes.NullValue(), nil
+			}
+
+			match := matcher.FindString(text)
+			if match == "" && !matcher.MatchString(text) {
+				return sqltypes.NullValue(), nil
+			}
+
+			return coerceResultValue(sqltypes.StringValue(match), inferStringLiteralType(&parser.StringLiteral{Value: match}), desc)
+		},
+	}, nil
+}
+
+func (c compiler) compileCeilFloorCall(
+	name string,
+	desc sqltypes.TypeDesc,
+	args []CompiledExpr,
+	ceil bool,
+) (CompiledExpr, error) {
+	if len(args) != 1 {
+		return CompiledExpr{}, fmt.Errorf("%w: %s expects 1 argument", ErrUnsupportedExpression, name)
+	}
+	if isUnknownTypeDesc(desc) {
+		desc = args[0].typ
+	}
+
+	return CompiledExpr{
+		typ: desc,
+		eval: func(row Row) (sqltypes.Value, error) {
+			value, err := args[0].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			if value.IsNull() {
+				return sqltypes.NullValue(), nil
+			}
+
+			source, ok := sourceTypeForValue(value, args[0].typ)
+			if !ok {
+				return sqltypes.Value{}, fmt.Errorf("%w: %s argument missing numeric type", ErrInvalidExpressionType, name)
+			}
+			if isApproximateNumericTypeKind(source.Kind) {
+				floatValue, err := float64FromNumericValue(value, args[0].typ, name)
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+				if ceil {
+					floatValue = math.Ceil(floatValue)
+				} else {
+					floatValue = math.Floor(floatValue)
+				}
+				return castApproximateResult(floatValue, desc)
+			}
+
+			decimal, err := decimalFromNumericValue(value, args[0].typ, name)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			result, err := ceilFloorDecimal(decimal, ceil)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			return castExactNumericResult(result, desc)
+		},
+	}, nil
+}
+
+func (c compiler) compileRoundCall(
+	name string,
+	desc sqltypes.TypeDesc,
+	args []CompiledExpr,
+	truncate bool,
+) (CompiledExpr, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return CompiledExpr{}, fmt.Errorf("%w: %s expects 1 or 2 arguments", ErrUnsupportedExpression, name)
+	}
+	if isUnknownTypeDesc(desc) {
+		desc = args[0].typ
+	}
+
+	mode := roundHalfAwayFromZero
+	if truncate {
+		mode = roundTowardZero
+	}
+
+	return CompiledExpr{
+		typ: desc,
+		eval: func(row Row) (sqltypes.Value, error) {
+			value, err := args[0].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			if value.IsNull() {
+				return sqltypes.NullValue(), nil
+			}
+
+			scale := int64(0)
+			if len(args) == 2 {
+				scaleValue, err := args[1].Eval(row)
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+				if scaleValue.IsNull() {
+					return sqltypes.NullValue(), nil
+				}
+
+				scale, err = int64FromNumericValue(scaleValue, args[1].typ, name+" scale")
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+			}
+
+			source, ok := sourceTypeForValue(value, args[0].typ)
+			if !ok {
+				return sqltypes.Value{}, fmt.Errorf("%w: %s argument missing numeric type", ErrInvalidExpressionType, name)
+			}
+			if isApproximateNumericTypeKind(source.Kind) {
+				floatValue, err := float64FromNumericValue(value, args[0].typ, name)
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+
+				var result float64
+				if truncate {
+					result = truncateFloat(floatValue, scale)
+				} else {
+					result = roundFloat(floatValue, scale)
+				}
+
+				return castApproximateResult(result, desc)
+			}
+
+			decimal, err := decimalFromNumericValue(value, args[0].typ, name)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			result, err := roundDecimal(decimal, scale, mode)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			return castExactNumericResult(result, desc)
+		},
+	}, nil
+}
+
+func (c compiler) compileModCall(desc sqltypes.TypeDesc, args []CompiledExpr) (CompiledExpr, error) {
+	if len(args) != 2 {
+		return CompiledExpr{}, fmt.Errorf("%w: MOD expects 2 arguments", ErrUnsupportedExpression)
+	}
+	if isUnknownTypeDesc(desc) {
+		desc = inferBinaryType("%", args[0].typ, args[1].typ)
+	}
+
+	return CompiledExpr{
+		typ: desc,
+		eval: func(row Row) (sqltypes.Value, error) {
+			leftValue, err := args[0].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			rightValue, err := args[1].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			return numericBinaryValue("%", leftValue, args[0].typ, rightValue, args[1].typ, desc)
+		},
+	}, nil
+}
+
+func (c compiler) compileApproxUnaryNumericCall(
+	name string,
+	desc sqltypes.TypeDesc,
+	args []CompiledExpr,
+	fn func(float64) float64,
+) (CompiledExpr, error) {
+	if len(args) != 1 {
+		return CompiledExpr{}, fmt.Errorf("%w: %s expects 1 argument", ErrUnsupportedExpression, name)
+	}
+	if isUnknownTypeDesc(desc) {
+		desc = sqltypes.TypeDesc{Kind: sqltypes.TypeKindDoublePrecision, Nullable: isNullableType(args[0].typ)}
+	}
+
+	return CompiledExpr{
+		typ: desc,
+		eval: func(row Row) (sqltypes.Value, error) {
+			value, err := args[0].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			if value.IsNull() {
+				return sqltypes.NullValue(), nil
+			}
+
+			floatValue, err := float64FromNumericValue(value, args[0].typ, name)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			return castApproximateResult(fn(floatValue), desc)
+		},
+	}, nil
+}
+
+func (c compiler) compileApproxBinaryNumericCall(
+	name string,
+	desc sqltypes.TypeDesc,
+	args []CompiledExpr,
+	fn func(float64, float64) float64,
+) (CompiledExpr, error) {
+	if len(args) != 2 {
+		return CompiledExpr{}, fmt.Errorf("%w: %s expects 2 arguments", ErrUnsupportedExpression, name)
+	}
+	if isUnknownTypeDesc(desc) {
+		desc = sqltypes.TypeDesc{Kind: sqltypes.TypeKindDoublePrecision, Nullable: isNullableType(args[0].typ) || isNullableType(args[1].typ)}
+	}
+
+	return CompiledExpr{
+		typ: desc,
+		eval: func(row Row) (sqltypes.Value, error) {
+			leftValue, err := args[0].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			rightValue, err := args[1].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			if leftValue.IsNull() || rightValue.IsNull() {
+				return sqltypes.NullValue(), nil
+			}
+
+			leftFloat, err := float64FromNumericValue(leftValue, args[0].typ, name)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			rightFloat, err := float64FromNumericValue(rightValue, args[1].typ, name)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			return castApproximateResult(fn(leftFloat, rightFloat), desc)
+		},
+	}, nil
+}
+
+func (c compiler) compileLogCall(desc sqltypes.TypeDesc, args []CompiledExpr) (CompiledExpr, error) {
+	switch len(args) {
+	case 1:
+		return c.compileApproxUnaryNumericCall("LOG", desc, args, math.Log)
+	case 2:
+		if isUnknownTypeDesc(desc) {
+			desc = sqltypes.TypeDesc{Kind: sqltypes.TypeKindDoublePrecision, Nullable: isNullableType(args[0].typ) || isNullableType(args[1].typ)}
+		}
+
+		return CompiledExpr{
+			typ: desc,
+			eval: func(row Row) (sqltypes.Value, error) {
+				baseValue, err := args[0].Eval(row)
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+				value, err := args[1].Eval(row)
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+				if baseValue.IsNull() || value.IsNull() {
+					return sqltypes.NullValue(), nil
+				}
+
+				base, err := float64FromNumericValue(baseValue, args[0].typ, "LOG base")
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+				operand, err := float64FromNumericValue(value, args[1].typ, "LOG value")
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+
+				return castApproximateResult(math.Log(operand)/math.Log(base), desc)
+			},
+		}, nil
+	default:
+		return CompiledExpr{}, fmt.Errorf("%w: LOG expects 1 or 2 arguments", ErrUnsupportedExpression)
+	}
+}
+
+func (c compiler) compileSignCall(desc sqltypes.TypeDesc, args []CompiledExpr) (CompiledExpr, error) {
+	if len(args) != 1 {
+		return CompiledExpr{}, fmt.Errorf("%w: SIGN expects 1 argument", ErrUnsupportedExpression)
+	}
+	if isUnknownTypeDesc(desc) {
+		desc = args[0].typ
+	}
+
+	return CompiledExpr{
+		typ: desc,
+		eval: func(row Row) (sqltypes.Value, error) {
+			value, err := args[0].Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			if value.IsNull() {
+				return sqltypes.NullValue(), nil
+			}
+
+			source, ok := sourceTypeForValue(value, args[0].typ)
+			if !ok {
+				return sqltypes.Value{}, fmt.Errorf("%w: SIGN argument missing numeric type", ErrInvalidExpressionType)
+			}
+			if isApproximateNumericTypeKind(source.Kind) {
+				floatValue, err := float64FromNumericValue(value, args[0].typ, "SIGN")
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+				sign := 0.0
+				switch {
+				case floatValue > 0:
+					sign = 1
+				case floatValue < 0:
+					sign = -1
+				}
+				return castApproximateResult(sign, desc)
+			}
+
+			decimal, err := decimalFromNumericValue(value, args[0].typ, "SIGN")
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			result := sqltypes.NewDecimalFromInt64(int64(decimal.Sign()))
+			return castExactNumericResult(result, desc)
+		},
+	}, nil
+}
+
+func compileRandomCall(desc sqltypes.TypeDesc, args []CompiledExpr) (CompiledExpr, error) {
+	if len(args) != 0 {
+		return CompiledExpr{}, fmt.Errorf("%w: RANDOM expects no arguments", ErrUnsupportedExpression)
+	}
+	if isUnknownTypeDesc(desc) {
+		desc = sqltypes.TypeDesc{Kind: sqltypes.TypeKindDoublePrecision}
+	}
+
+	return CompiledExpr{
+		typ: desc,
+		eval: func(Row) (sqltypes.Value, error) {
+			return castApproximateResult(rand.Float64(), desc)
+		},
+	}, nil
+}
+
+func evalRegexpMatchInputs(row Row, args []CompiledExpr) (string, *regexp.Regexp, error) {
+	textValue, err := args[0].Eval(row)
+	if err != nil {
+		return "", nil, err
+	}
+	patternValue, err := args[1].Eval(row)
+	if err != nil {
+		return "", nil, err
+	}
+	if textValue.IsNull() || patternValue.IsNull() {
+		return "", nil, nil
+	}
+
+	text, err := stringFromValue(textValue, "regexp text")
+	if err != nil {
+		return "", nil, err
+	}
+	pattern, err := stringFromValue(patternValue, "regexp pattern")
+	if err != nil {
+		return "", nil, err
+	}
+
+	flags := ""
+	if len(args) == 3 {
+		flagsValue, err := args[2].Eval(row)
+		if err != nil {
+			return "", nil, err
+		}
+		if flagsValue.IsNull() {
+			return "", nil, nil
+		}
+
+		flags, err = stringFromValue(flagsValue, "regexp flags")
+		if err != nil {
+			return "", nil, err
+		}
+	}
+
+	matcher, err := compileRegexpPattern(pattern, flags)
+	if err != nil {
+		return "", nil, err
+	}
+
+	return text, matcher, nil
+}
+
+func compileRegexpPattern(pattern, flags string) (*regexp.Regexp, error) {
+	var inline strings.Builder
+	seen := make(map[rune]struct{}, len(flags))
+	for _, flag := range flags {
+		if _, ok := seen[flag]; ok {
+			continue
+		}
+		seen[flag] = struct{}{}
+
+		switch flag {
+		case 'i', 'm', 's':
+			inline.WriteRune(flag)
+		case 'c', 'g':
+			// `c` keeps Go's default case-sensitive mode; `g` is a no-op because
+			// replacement already runs globally.
+		default:
+			return nil, fmt.Errorf("%w: unsupported regexp flag %q", ErrInvalidExpressionType, string(flag))
+		}
+	}
+
+	expr := pattern
+	if inline.Len() > 0 {
+		expr = "(?" + inline.String() + ")" + expr
+	}
+
+	return regexp.Compile(expr)
+}
+
+func castApproximateResult(value float64, target sqltypes.TypeDesc) (sqltypes.Value, error) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return sqltypes.Value{}, fmt.Errorf("%w: %s", sqltypes.ErrNonFiniteNumeric, target.Kind)
+	}
+	if isUnknownTypeDesc(target) {
+		return sqltypes.Float64Value(value), nil
+	}
+
+	return castRuntimeValue(
+		sqltypes.Float64Value(value),
+		sqltypes.TypeDesc{Kind: sqltypes.TypeKindDoublePrecision},
+		target,
+		false,
+	)
+}
+
+func castExactNumericResult(value sqltypes.Decimal, target sqltypes.TypeDesc) (sqltypes.Value, error) {
+	if isUnknownTypeDesc(target) {
+		return sqltypes.DecimalValue(value), nil
+	}
+
+	return castRuntimeValue(
+		sqltypes.DecimalValue(value),
+		sqltypes.TypeDesc{Kind: sqltypes.TypeKindNumeric},
+		target,
+		false,
+	)
+}
+
+func decimalFromNumericValue(value sqltypes.Value, hint sqltypes.TypeDesc, context string) (sqltypes.Decimal, error) {
+	source, ok := sourceTypeForValue(value, hint)
+	if !ok {
+		return sqltypes.Decimal{}, fmt.Errorf("%w: %s missing numeric type", ErrInvalidExpressionType, context)
+	}
+
+	decimalValue, err := castRuntimeValue(value, source, sqltypes.TypeDesc{Kind: sqltypes.TypeKindNumeric}, false)
+	if err != nil {
+		return sqltypes.Decimal{}, fmt.Errorf("%s: %w", context, err)
+	}
+
+	decimal, ok := decimalValue.Raw().(sqltypes.Decimal)
+	if !ok {
+		return sqltypes.Decimal{}, fmt.Errorf("%w: %s did not produce DECIMAL", ErrInvalidExpressionType, context)
+	}
+
+	return decimal, nil
+}
+
+func float64FromNumericValue(value sqltypes.Value, hint sqltypes.TypeDesc, context string) (float64, error) {
+	source, ok := sourceTypeForValue(value, hint)
+	if !ok {
+		return 0, fmt.Errorf("%w: %s missing numeric type", ErrInvalidExpressionType, context)
+	}
+
+	floatValue, err := castRuntimeValue(value, source, sqltypes.TypeDesc{Kind: sqltypes.TypeKindDoublePrecision}, false)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", context, err)
+	}
+
+	return floatValue.Raw().(float64), nil
+}
+
+func ceilFloorDecimal(value sqltypes.Decimal, ceil bool) (sqltypes.Decimal, error) {
+	normalized := sqltypes.DecimalValue(value).Raw().(sqltypes.Decimal)
+	scale := normalized.Scale()
+	if scale <= 0 {
+		return normalized, nil
+	}
+
+	factor := pow10(int64(scale))
+	quotient, remainder := new(big.Int).QuoRem(normalized.Coefficient(), factor, new(big.Int))
+	if remainder.Sign() == 0 {
+		return sqltypes.NewDecimal(quotient, 0)
+	}
+	if ceil && normalized.Sign() > 0 {
+		quotient.Add(quotient, big.NewInt(1))
+	}
+	if !ceil && normalized.Sign() < 0 {
+		quotient.Sub(quotient, big.NewInt(1))
+	}
+
+	return sqltypes.NewDecimal(quotient, 0)
+}
+
+func roundDecimal(value sqltypes.Decimal, scale int64, mode roundMode) (sqltypes.Decimal, error) {
+	normalized := sqltypes.DecimalValue(value).Raw().(sqltypes.Decimal)
+	currentScale := int64(normalized.Scale())
+	if scale >= currentScale {
+		return normalized, nil
+	}
+	if int64(int32(scale)) != scale {
+		return sqltypes.Decimal{}, fmt.Errorf("%w: rounding scale %d", ErrInvalidExpressionType, scale)
+	}
+
+	shift := currentScale - scale
+	factor := pow10(shift)
+	quotient, remainder := new(big.Int).QuoRem(normalized.Coefficient(), factor, new(big.Int))
+
+	if mode == roundHalfAwayFromZero && remainder.Sign() != 0 {
+		doubleRemainder := new(big.Int).Mul(new(big.Int).Abs(remainder), big.NewInt(2))
+		if doubleRemainder.Cmp(factor) >= 0 {
+			if normalized.Sign() >= 0 {
+				quotient.Add(quotient, big.NewInt(1))
+			} else {
+				quotient.Sub(quotient, big.NewInt(1))
+			}
+		}
+	}
+
+	return sqltypes.NewDecimal(quotient, int32(scale))
+}
+
+func roundFloat(value float64, scale int64) float64 {
+	if scale > 308 {
+		return value
+	}
+
+	factor := pow10Float(scale)
+	if factor == 0 {
+		return 0
+	}
+	if factor < 1 {
+		return math.Round(value/factor) * factor
+	}
+
+	return math.Round(value*factor) / factor
+}
+
+func truncateFloat(value float64, scale int64) float64 {
+	if scale > 308 {
+		return value
+	}
+
+	factor := pow10Float(scale)
+	if factor == 0 {
+		return 0
+	}
+	if factor < 1 {
+		return math.Trunc(value/factor) * factor
+	}
+
+	return math.Trunc(value*factor) / factor
+}
+
+func pow10Float(exponent int64) float64 {
+	switch {
+	case exponent > 308:
+		return math.Inf(1)
+	case exponent < -323:
+		return 0
+	default:
+		return math.Pow10(int(exponent))
+	}
+}
+
+func isApproximateNumericTypeKind(kind sqltypes.TypeKind) bool {
+	switch kind {
+	case sqltypes.TypeKindReal, sqltypes.TypeKindDoublePrecision:
+		return true
+	default:
+		return false
+	}
 }
 
 func inferBinaryType(operator string, left, right sqltypes.TypeDesc) sqltypes.TypeDesc {

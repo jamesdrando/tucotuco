@@ -779,12 +779,14 @@ func (p *typeCheckPass) functionCallType(node *parser.FunctionCall) sqtypes.Type
 	}
 
 	argTypes := make([]sqtypes.TypeDesc, 0, len(node.Args))
+	argNodes := make([]parser.Node, 0, len(node.Args))
 	hasStar := false
 	for _, arg := range node.Args {
 		if _, ok := arg.(*parser.Star); ok {
 			hasStar = true
 			continue
 		}
+		argNodes = append(argNodes, arg)
 		argTypes = append(argTypes, p.exprType(arg))
 	}
 
@@ -811,13 +813,132 @@ func (p *typeCheckPass) functionCallType(node *parser.FunctionCall) sqtypes.Type
 			return sqtypes.TypeDesc{}
 		}
 		return argTypes[0]
+	case "CEIL", "FLOOR", "SIGN":
+		if len(argTypes) != 1 {
+			p.undefinedFunction(node.Name, node.Pos())
+			return sqtypes.TypeDesc{}
+		}
+		p.requireNumeric(argNodes[0], argTypes[0], name+" argument")
+		return withNullable(argTypes[0], strictNullable(argTypes))
+	case "SQRT", "EXP", "LN", "LOG10", "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN":
+		if len(argTypes) != 1 {
+			p.undefinedFunction(node.Name, node.Pos())
+			return sqtypes.TypeDesc{}
+		}
+		p.requireNumeric(argNodes[0], argTypes[0], name+" argument")
+		return sqtypes.TypeDesc{Kind: sqtypes.TypeKindDoublePrecision, Nullable: strictNullable(argTypes)}
+	case "ROUND", "TRUNCATE":
+		if len(argTypes) != 1 && len(argTypes) != 2 {
+			p.undefinedFunction(node.Name, node.Pos())
+			return sqtypes.TypeDesc{}
+		}
+		p.requireNumeric(argNodes[0], argTypes[0], name+" argument")
+		if len(argTypes) == 2 {
+			p.requireInteger(argNodes[1], argTypes[1], name+" precision")
+		}
+		return withNullable(argTypes[0], strictNullable(argTypes))
+	case "MOD":
+		if len(argTypes) != 2 {
+			p.undefinedFunction(node.Name, node.Pos())
+			return sqtypes.TypeDesc{}
+		}
+		p.requireNumeric(argNodes[0], argTypes[0], name+" argument")
+		p.requireNumeric(argNodes[1], argTypes[1], name+" argument")
+		result, ok := sqtypes.CommonSuperType(argTypes[0], argTypes[1])
+		if !ok || (!isUnknownType(result) && !isNumericType(result)) {
+			return sqtypes.TypeDesc{}
+		}
+		return withNullable(result, strictNullable(argTypes))
+	case "POWER", "ATAN2":
+		if len(argTypes) != 2 {
+			p.undefinedFunction(node.Name, node.Pos())
+			return sqtypes.TypeDesc{}
+		}
+		p.requireNumeric(argNodes[0], argTypes[0], name+" argument")
+		p.requireNumeric(argNodes[1], argTypes[1], name+" argument")
+		return sqtypes.TypeDesc{Kind: sqtypes.TypeKindDoublePrecision, Nullable: strictNullable(argTypes)}
+	case "LOG":
+		if len(argTypes) != 1 && len(argTypes) != 2 {
+			p.undefinedFunction(node.Name, node.Pos())
+			return sqtypes.TypeDesc{}
+		}
+		p.requireNumeric(argNodes[0], argTypes[0], name+" argument")
+		if len(argTypes) == 2 {
+			p.requireNumeric(argNodes[1], argTypes[1], name+" argument")
+		}
+		return sqtypes.TypeDesc{Kind: sqtypes.TypeKindDoublePrecision, Nullable: strictNullable(argTypes)}
+	case "RANDOM":
+		if len(argTypes) != 0 || hasStar {
+			p.undefinedFunction(node.Name, node.Pos())
+			return sqtypes.TypeDesc{}
+		}
+		return sqtypes.TypeDesc{Kind: sqtypes.TypeKindDoublePrecision}
 	case "LOWER", "UPPER", "LTRIM", "RTRIM", "TRIM", "SUBSTRING":
 		if len(argTypes) == 0 {
 			p.undefinedFunction(node.Name, node.Pos())
 			return sqtypes.TypeDesc{}
 		}
-		p.requireCharacter(node.Args[0], argTypes[0], name+" argument")
+		p.requireCharacter(argNodes[0], argTypes[0], name+" argument")
 		return argTypes[0]
+	case "POSITION":
+		if len(argTypes) != 2 {
+			p.undefinedFunction(node.Name, node.Pos())
+			return sqtypes.TypeDesc{}
+		}
+		p.requireCharacter(argNodes[0], argTypes[0], name+" argument")
+		p.requireCharacter(argNodes[1], argTypes[1], name+" argument")
+		return sqtypes.TypeDesc{Kind: sqtypes.TypeKindBigInt, Nullable: strictNullable(argTypes)}
+	case "OVERLAY":
+		if len(argTypes) != 3 && len(argTypes) != 4 {
+			p.undefinedFunction(node.Name, node.Pos())
+			return sqtypes.TypeDesc{}
+		}
+		p.requireCharacter(argNodes[0], argTypes[0], name+" argument")
+		p.requireCharacter(argNodes[1], argTypes[1], name+" argument")
+		p.requireInteger(argNodes[2], argTypes[2], name+" start")
+		if len(argTypes) == 4 {
+			p.requireInteger(argNodes[3], argTypes[3], name+" length")
+		}
+		if result, ok := sqtypes.CommonSuperType(argTypes[0], argTypes[1]); ok && (isUnknownType(result) || isCharacterType(result)) {
+			return withNullable(result, strictNullable(argTypes))
+		}
+		if isCharacterType(argTypes[0]) {
+			return withNullable(argTypes[0], strictNullable(argTypes))
+		}
+		return sqtypes.TypeDesc{}
+	case "REGEXP_LIKE":
+		if len(argTypes) != 2 && len(argTypes) != 3 {
+			p.undefinedFunction(node.Name, node.Pos())
+			return sqtypes.TypeDesc{}
+		}
+		for index, argType := range argTypes {
+			p.requireCharacter(argNodes[index], argType, name+" argument")
+		}
+		return booleanType(strictNullable(argTypes))
+	case "REGEXP_REPLACE":
+		if len(argTypes) != 3 && len(argTypes) != 4 {
+			p.undefinedFunction(node.Name, node.Pos())
+			return sqtypes.TypeDesc{}
+		}
+		for index, argType := range argTypes {
+			p.requireCharacter(argNodes[index], argType, name+" argument")
+		}
+		if result, ok := sqtypes.CommonSuperType(argTypes[0], argTypes[2]); ok && (isUnknownType(result) || isCharacterType(result)) {
+			return withNullable(result, strictNullable(argTypes))
+		}
+		if isCharacterType(argTypes[0]) {
+			return withNullable(argTypes[0], strictNullable(argTypes))
+		}
+		return sqtypes.TypeDesc{}
+	case "REGEXP_SUBSTR":
+		if len(argTypes) != 2 && len(argTypes) != 3 {
+			p.undefinedFunction(node.Name, node.Pos())
+			return sqtypes.TypeDesc{}
+		}
+		for index, argType := range argTypes {
+			p.requireCharacter(argNodes[index], argType, name+" argument")
+		}
+		return withNullable(argTypes[0], strictNullable(argTypes))
 	case "CONCAT":
 		if len(argTypes) == 0 {
 			p.undefinedFunction(node.Name, node.Pos())
@@ -830,7 +951,7 @@ func (p *typeCheckPass) functionCallType(node *parser.FunctionCall) sqtypes.Type
 			nullable bool
 		)
 		for index, argType := range argTypes {
-			p.requireCharacter(node.Args[index], argType, name+" argument")
+			p.requireCharacter(argNodes[index], argType, name+" argument")
 			if !haveType {
 				result = argType
 				haveType = true
@@ -848,7 +969,7 @@ func (p *typeCheckPass) functionCallType(node *parser.FunctionCall) sqtypes.Type
 			p.undefinedFunction(node.Name, node.Pos())
 			return sqtypes.TypeDesc{}
 		}
-		p.requireCharacter(node.Args[0], argTypes[0], name+" argument")
+		p.requireCharacter(argNodes[0], argTypes[0], name+" argument")
 		return sqtypes.TypeDesc{Kind: sqtypes.TypeKindBigInt, Nullable: isNullableResult(argTypes[0])}
 	case "OCTET_LENGTH":
 		if len(argTypes) != 1 {
@@ -927,7 +1048,7 @@ func (p *typeCheckPass) functionCallType(node *parser.FunctionCall) sqtypes.Type
 			p.undefinedFunction(node.Name, node.Pos())
 			return sqtypes.TypeDesc{}
 		}
-		p.requireBoolean(node.Args[0], argTypes[0], name+" argument")
+		p.requireBoolean(argNodes[0], argTypes[0], name+" argument")
 		return booleanType(true)
 	case "CURRENT_DATE":
 		if len(argTypes) != 0 || hasStar {
@@ -1012,6 +1133,28 @@ func (p *typeCheckPass) requireCharacter(node parser.Node, desc sqtypes.TypeDesc
 	}
 
 	p.addError(sqlStateDatatypeMismatch, node.Pos(), "%s must be a character type, found %s", context, typeString(desc))
+}
+
+func (p *typeCheckPass) requireNumeric(node parser.Node, desc sqtypes.TypeDesc, context string) {
+	if node == nil || isUnknownType(desc) {
+		return
+	}
+	if isNumericType(desc) {
+		return
+	}
+
+	p.addError(sqlStateDatatypeMismatch, node.Pos(), "%s must be numeric, found %s", context, typeString(desc))
+}
+
+func (p *typeCheckPass) requireInteger(node parser.Node, desc sqtypes.TypeDesc, context string) {
+	if node == nil || isUnknownType(desc) {
+		return
+	}
+	if isIntegerLikeType(desc) {
+		return
+	}
+
+	p.addError(sqlStateDatatypeMismatch, node.Pos(), "%s must be an integer type, found %s", context, typeString(desc))
 }
 
 func (p *typeCheckPass) requireAssignable(node parser.Node, from sqtypes.TypeDesc, to sqtypes.TypeDesc, context string) {
@@ -1287,6 +1430,15 @@ func isNullableResult(desc sqtypes.TypeDesc) bool {
 	return isUnknownType(desc) || desc.Nullable
 }
 
+func strictNullable(args []sqtypes.TypeDesc) bool {
+	for _, arg := range args {
+		if isNullableResult(arg) {
+			return true
+		}
+	}
+	return false
+}
+
 func withNullable(desc sqtypes.TypeDesc, nullable bool) sqtypes.TypeDesc {
 	if isUnknownType(desc) {
 		return desc
@@ -1321,6 +1473,19 @@ func isExactIntegerType(desc sqtypes.TypeDesc) bool {
 	switch desc.Kind {
 	case sqtypes.TypeKindSmallInt, sqtypes.TypeKindInteger, sqtypes.TypeKindBigInt:
 		return true
+	default:
+		return false
+	}
+}
+
+func isIntegerLikeType(desc sqtypes.TypeDesc) bool {
+	if isExactIntegerType(desc) {
+		return true
+	}
+
+	switch desc.Kind {
+	case sqtypes.TypeKindNumeric, sqtypes.TypeKindDecimal:
+		return desc.Scale == 0
 	default:
 		return false
 	}
