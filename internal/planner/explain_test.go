@@ -77,6 +77,26 @@ func TestExplainBuildsStableLimitTree(t *testing.T) {
 	}
 }
 
+func TestExplainBuildsStableJoinTree(t *testing.T) {
+	t.Parallel()
+
+	stmt, bindings, types := analyzeSelect(t, plannerTestCatalog(t), "SELECT o.id FROM orders AS o LEFT JOIN customers AS c ON o.customer_id = c.id")
+
+	plan, diags := NewBuilder(bindings, types).Build(stmt)
+	if len(diags) != 0 {
+		t.Fatalf("Build() diagnostics = %#v, want none", diags)
+	}
+
+	if got, want := Explain(plan), trimExplain(`
+		Project(columns=[id INTEGER NOT NULL])
+		  Join(type=LEFT, condition=o.customer_id = c.id)
+		    Scan(table=public.orders, columns=[id INTEGER NOT NULL, customer_id INTEGER, total INTEGER])
+		    Scan(table=public.customers, columns=[id INTEGER NOT NULL, customer_id INTEGER])
+	`); got != want {
+		t.Fatalf("Explain() = %q, want %q", got, want)
+	}
+}
+
 func TestExplainDoesNotEmbedPlannerDiagnostics(t *testing.T) {
 	t.Parallel()
 

@@ -229,12 +229,16 @@
 
 - [x] **T-127** — Vacuum / dead tuple reclamation `[parallel-safe]` `depends: T-126`
 
-- [ ] **T-128** — Migrate in-memory storage tests to paged storage `[serial]` `depends: T-126`
+- [x] **T-128** — Migrate in-memory storage tests to paged storage `[serial]` `depends: T-126`
+  - Shared storage behavior coverage now lives in `internal/storage/storagetest`.
+  - `internal/storage/memory/store_test.go` and `internal/storage/paged/storage_contract_test.go` both execute the shared suite, while backend-specific handle semantics remain covered in backend-specific tests.
 
 ### 2B — SQL-92 Feature Completeness
 
-- [ ] **T-130** — JOIN: INNER, LEFT OUTER, RIGHT OUTER, FULL OUTER, CROSS `[serial]` `depends: M1`
+- [x] **T-130** — JOIN: INNER, LEFT OUTER, RIGHT OUTER, FULL OUTER, CROSS `[serial]` `depends: M1`
   - Nested-loop join executor first; hash join in Phase 3
+  - Added a logical planner join node plus nested-loop executor/lowering support for `INNER`, `LEFT`, `RIGHT`, `FULL`, and comma/CROSS joins, preserving joined-column source metadata and outer-join nullability through planner/executor/embed/compliance coverage.
+  - `JOIN ... USING` and `NATURAL JOIN` remain explicit feature errors in this baton; their merged-column semantics are still open beyond `T-130`.
 
 - [ ] **T-131** — Subqueries: scalar, `EXISTS`, `IN`, correlated `[serial]` `depends: M1`
 

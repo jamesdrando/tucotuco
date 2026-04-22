@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jamesdrando/tucotuco/internal/analyzer"
 	"github.com/jamesdrando/tucotuco/internal/parser"
 	"github.com/jamesdrando/tucotuco/internal/storage"
 	sqltypes "github.com/jamesdrando/tucotuco/internal/types"
@@ -19,6 +20,8 @@ const (
 	KindFilter Kind = "Filter"
 	// KindProject identifies a logical projection.
 	KindProject Kind = "Project"
+	// KindJoin identifies a logical join.
+	KindJoin Kind = "Join"
 	// KindLimit identifies a logical row-count limit.
 	KindLimit Kind = "Limit"
 )
@@ -47,6 +50,10 @@ type Column struct {
 	Name string
 	// Type is the semantic SQL type of the column.
 	Type sqltypes.TypeDesc
+	// RelationName is the visible relation or alias name, when known.
+	RelationName string
+	// Binding preserves the resolved source-column identity for lowering.
+	Binding *analyzer.ColumnBinding
 }
 
 // String returns a compact display form of the output column.
@@ -232,6 +239,81 @@ func (p *Project) String() string {
 	}
 
 	return formatPlan(KindProject, "columns=["+formatProjectionOutputs(p.Projections)+"]")
+}
+
+// Join combines rows from two child plans.
+type Join struct {
+	// Left is the left child plan.
+	Left Plan
+	// Right is the right child plan.
+	Right Plan
+	// Type is the logical join type.
+	Type string
+	// Condition is the optional analyzed join predicate.
+	Condition parser.Node
+	// OutputColumns are the visible columns emitted by the join.
+	OutputColumns []Column
+}
+
+// NewJoin constructs a logical join over two child plans.
+func NewJoin(left Plan, right Plan, joinType string, condition parser.Node, columns ...Column) *Join {
+	return &Join{
+		Left:          left,
+		Right:         right,
+		Type:          joinType,
+		Condition:     condition,
+		OutputColumns: append([]Column(nil), columns...),
+	}
+}
+
+func (*Join) plan() {}
+
+// Kind reports the operator kind.
+func (*Join) Kind() Kind {
+	return KindJoin
+}
+
+// Children reports both join inputs.
+func (j *Join) Children() []Plan {
+	if j == nil {
+		return nil
+	}
+
+	children := make([]Plan, 0, 2)
+	if j.Left != nil {
+		children = append(children, j.Left)
+	}
+	if j.Right != nil {
+		children = append(children, j.Right)
+	}
+
+	return children
+}
+
+// Columns reports the join output schema.
+func (j *Join) Columns() []Column {
+	if j == nil {
+		return nil
+	}
+
+	return append([]Column(nil), j.OutputColumns...)
+}
+
+// String returns a stable one-line rendering of the join.
+func (j *Join) String() string {
+	if j == nil {
+		return KindJoin.String()
+	}
+
+	details := []string{}
+	if strings.TrimSpace(j.Type) != "" {
+		details = append(details, "type="+j.Type)
+	}
+	if j.Condition != nil {
+		details = append(details, "condition="+formatExpr(j.Condition))
+	}
+
+	return formatPlan(KindJoin, details...)
 }
 
 // Limit truncates its input to a fixed number of rows.

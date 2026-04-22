@@ -11,9 +11,11 @@ statement 2:
   sql:
     SELECT widgets.id FROM widgets, widgets AS other
   result:
-    error
-    diagnostics:
-      [0] ERROR [SQLSTATE 0A000] at 1:33 (offset 32): multiple FROM sources are not supported in Phase 1 planner
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      <empty>
 
 statement 3:
   sql:
@@ -21,7 +23,7 @@ statement 3:
   result:
     error
     diagnostics:
-      [0] ERROR [SQLSTATE 0A000] at 1:28 (offset 27): JOIN planning is not supported in Phase 1 planner
+      [0] ERROR [SQLSTATE 0A000] at 1:28 (offset 27): JOIN ... USING is not supported in Phase 2 planner
 
 statement 4:
   sql:

@@ -6,4 +6,4 @@ statement 1:
   result:
     error
     diagnostics:
-      [0] ERROR [SQLSTATE 0A000] at 1:15 (offset 14): JOIN planning is not supported in Phase 1 planner
+      [0] ERROR [SQLSTATE 0A000] at 1:15 (offset 14): NATURAL JOIN planning is not supported in Phase 2 planner

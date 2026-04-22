@@ -125,6 +125,60 @@ func TestProjectBuildsOutputColumnsAndFormatting(t *testing.T) {
 	}
 }
 
+func TestJoinReportsChildrenShapeAndFormatting(t *testing.T) {
+	t.Parallel()
+
+	left := NewScan(
+		storage.TableID{Schema: "public", Name: "orders"},
+		Column{Name: "id", Type: mustTypeDesc(t, "INTEGER NOT NULL")},
+	)
+	right := NewScan(
+		storage.TableID{Schema: "public", Name: "customers"},
+		Column{Name: "id", Type: mustTypeDesc(t, "INTEGER")},
+	)
+	stmt := mustSelect(t, "SELECT o.id FROM orders AS o INNER JOIN customers AS c ON o.id = c.id")
+	joinExpr, ok := stmt.From[0].(*parser.JoinExpr)
+	if !ok {
+		t.Fatalf("stmt.From[0] = %T, want *parser.JoinExpr", stmt.From[0])
+	}
+	join := NewJoin(
+		left,
+		right,
+		"LEFT",
+		joinExpr.Condition,
+		Column{Name: "id", Type: mustTypeDesc(t, "INTEGER NOT NULL")},
+		Column{Name: "id", Type: mustTypeDesc(t, "INTEGER")},
+	)
+
+	if join.Kind() != KindJoin {
+		t.Fatalf("Kind() = %q, want %q", join.Kind(), KindJoin)
+	}
+	if got, want := join.Children(), []Plan{left, right}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Children() = %#v, want %#v", got, want)
+	}
+	if got, want := join.Columns(), []Column{
+		{Name: "id", Type: mustTypeDesc(t, "INTEGER NOT NULL")},
+		{Name: "id", Type: mustTypeDesc(t, "INTEGER")},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Columns() = %#v, want %#v", got, want)
+	}
+	if got, want := join.String(), "Join(type=LEFT, condition=o.id = c.id)"; got != want {
+		t.Fatalf("String() = %q, want %q", got, want)
+	}
+
+	gotColumns := join.Columns()
+	gotColumns[0].Name = "mutated"
+	if join.OutputColumns[0].Name != "id" {
+		t.Fatalf("Columns() returned shared backing slice")
+	}
+
+	gotChildren := join.Children()
+	gotChildren[0] = nil
+	if children := join.Children(); len(children) != 2 || children[0] != left || children[1] != right {
+		t.Fatalf("Children() returned shared backing slice")
+	}
+}
+
 func TestLimitInheritsInputShapeAndFormatting(t *testing.T) {
 	t.Parallel()
 

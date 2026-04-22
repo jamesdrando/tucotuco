@@ -18,65 +18,57 @@
 
 ## JUST DONE
 
-Completed `TASKS.md` T-127 by adding paged vacuum / dead tuple reclamation and clearing the repo-wide lint blocker now that `golangci-lint` is available again.
+Completed `TASKS.md` T-130 by adding the first SQL-92 join execution path across planner, executor, embed, CLI, and SQL-92 golden coverage.
 
-- Parallelized the closeout with six bounded subagents:
-  - storage/WAL design review
-  - vacuum implementation
-  - vacuum regression coverage
-  - `golangci-lint` v2 config migration
-  - repo-wide lint cleanup across unaffected packages
-- Added `Relation.Vacuum()` in `internal/storage/paged/relation.go` as a relation-scoped, page-local reclamation pass that:
-  - compacts reclaimable in-page dead space without introducing a new heap format
-  - preserves one-hop redirect roots as logical entry points
-  - keeps reclaimed caller-visible slots as dead tombstones instead of reusable slots
-  - refreshes `InsertHint` without regressing metadata page `0` `NextVersion`
-- Added heap-page vacuum detection/compaction in `internal/storage/paged/heap_page.go` to reclaim:
-  - deleted tuple payloads
-  - superseded replacement-version payloads
-  - rewrite/redirect shrink slack tracked through `dead_bytes`
-- Added T-127 coverage in `internal/storage/paged/vacuum_test.go` for:
-  - delete-driven reclamation plus committed scan stability
-  - redirect-root lookup/scan stability through update chains
-  - active `RelationTx` behavior across external vacuum
-  - reopen/recovery durability plus `NextVersion` non-regression
-- Cleaned the focused paged-storage lint fallout in `internal/storage/paged/tuple.go` and `internal/storage/paged/store_test.go`.
-- Restored repo-wide linting by migrating `.golangci.yml` to the installed `golangci-lint` v2 syntax, then cleared the newly exposed backlog across `cmd/tucotuco`, `pkg/driver`, `pkg/embed`, `internal/script`, `internal/parser`, `internal/types`, `internal/executor`, `internal/lexer`, and `scripts/`.
-- Revalidated focused storage coverage:
-  - `env GOCACHE=/tmp/tucotuco-go-test-focused go test ./internal/storage/paged ./internal/wal`
-  - `env XDG_CACHE_HOME=/tmp/tucotuco-xdg-cache GOCACHE=/tmp/tucotuco-go-lint-focused golangci-lint run ./internal/storage/paged ./internal/wal`
-- Revalidated repo-wide regression/build/lint coverage:
-  - `env GOCACHE=/tmp/tucotuco-go-test-all-final go test ./...`
-  - `env GOCACHE=/tmp/tucotuco-go-build-all-final go build ./...`
-  - `env XDG_CACHE_HOME=/tmp/tucotuco-xdg-cache-all-final GOCACHE=/tmp/tucotuco-go-lint-all-final golangci-lint run ./...`
-- Confirmed formatting and whitespace hygiene:
+- Parallelized the work with bounded subagents across planner discovery, executor discovery, planner implementation, executor implementation, embed integration, and fixture review.
+- Added `internal/planner.Join` plus planner-side join tree construction for:
+  - `INNER`, `LEFT`, `RIGHT`, `FULL`, and comma/CROSS joins
+  - source-column provenance (`RelationName` + analyzer binding) on planner output columns
+  - outer-join nullability propagation through joined outputs and direct projections
+- Added `internal/executor/NestedLoopJoin` with:
+  - left-to-right output column order
+  - buffered right-side materialization
+  - optional `ON` predicate evaluation over combined rows
+  - NULL-extension for unmatched outer rows
+- Restored a single planner-driven lowering path in `pkg/embed/lower.go` so query execution, `INSERT ... SELECT`, and CLI/compliance harnesses all share the same join-aware row-shape/binding logic.
+- Updated focused and golden coverage:
+  - planner join shape/explain/nullability/alias tests
+  - executor nested-loop join lifecycle and semantic tests
+  - embed end-to-end join tests plus SQL-92 fixture flips for derived joins and comma/CROSS joins
+  - explicit unsupported diagnostics retained for `JOIN ... USING` and `NATURAL JOIN` in this baton
+- Revalidated focused join coverage:
+  - `env GOCACHE=/tmp/tucotuco-go-test-core-t130 go test ./internal/planner ./pkg/embed ./cmd/tucotuco ./compliance/sql92`
+  - `env GOCACHE=/tmp/tucotuco-go-test-executor-t130 go test ./internal/executor`
   - `git diff --check`
-- Marked `TASKS.md` T-127 complete after focused and repo-wide validation passed.
+- Revalidated repo-wide regression/build/lint coverage:
+  - `env GOCACHE=/tmp/tucotuco-go-test-all-t130b go test ./...`
+  - `env GOCACHE=/tmp/tucotuco-go-build-all-t130b go build ./...`
+  - `env XDG_CACHE_HOME=/tmp/tucotuco-xdg-cache-all-t130b GOCACHE=/tmp/tucotuco-go-lint-all-t130b golangci-lint run ./...`
 
 ---
 
 ## NEXT
 
-**Task(s) to execute:** T-128
+**Task(s) to execute:** T-131
 
 **Instructions for the incoming agent:**
 
-1. Read `AGENTS.md` and `INDEX.md` again before starting the next storage task.
-2. Start **T-128** by migrating the existing in-memory storage behavior coverage onto paged storage instead of introducing a second semantic baseline.
-3. Use the new paged regression seams as the expected storage contract:
-  - committed `Lookup` / `Scan` must keep root-handle stability through redirects
-  - relation-local transactions must stay aligned with committed state plus own writes
-  - vacuumed relations must preserve reopen/recovery behavior
-4. Reuse the current paged helpers and fixtures where practical:
-  - `internal/storage/paged/vacuum_test.go`
-  - `internal/storage/paged/transaction_test.go`
-  - `internal/storage/paged/relation_test.go`
-5. Keep the suite drift-free between `internal/storage/memory` and `internal/storage/paged`; if a behavior mismatch appears, stop and resolve whether the paged or in-memory expectation is wrong before widening the migration.
-6. `golangci-lint` is now active again via the migrated `.golangci.yml`, so keep focused and repo-wide lint green while moving the tests.
+1. Read `AGENTS.md` and `INDEX.md` again before starting the next SQL task.
+2. Start **T-131** as the first unchecked task in `TASKS.md`: add subquery support (`scalar`, `EXISTS`, `IN`, correlated) on top of the new join-capable planner/executor path.
+3. Keep the new storage contract untouched unless subquery execution exposes a real storage regression:
+  - `internal/storage/storagetest/contract.go` is now the shared storage baseline
+  - committed paged handle-stability expectations still live in the paged relation/vacuum tests
+4. Read the subquery semantics in `SPEC.md` §8.1 and especially §8.2 before editing analyzer, planner, or executor code.
+5. The join baseline now exists in:
+  - `internal/planner/plan.go` / `internal/planner/builder.go`
+  - `internal/executor/join.go`
+  - `pkg/embed/lower.go`
+  - `testdata/results/045_*.txt`, `050_multiple_from_sources.txt`, `057_*.txt`, and `059_*.txt`
+6. `JOIN ... USING` and `NATURAL JOIN` are still explicit feature errors after `T-130`; do not silently broaden them while working on `T-131`.
 
-**Spec references:** `SPEC.md` §7, §8, §9, `docs/storage.md` §6, §7, §9, §10
+**Spec references:** `SPEC.md` §8.2
 
-**Estimated parallelism available:** 1 stream (`T-128` is serial and is the first unblocked task)
+**Estimated parallelism available:** 6 streams after the first `T-131` planning pass
 
 ---
 
@@ -140,3 +132,5 @@ _None._
 | #031 | 2026-04-21 | Codex | Completed T-125 | Parallelized `T-125` with bounded subagents, activated relation-local tuple version metadata (`xmin` / `xmax`), persisted page-0 version allocation, added version-aware paged-storage + recovery tests, passed focused and repo-wide tests/build, and advanced the baton to `T-126` |
 | #032 | 2026-04-21 | Codex | Completed T-126 | Finished relation-local begin/commit/rollback in `internal/storage/paged`, fixed redirect/version-floor reopen regressions, added transaction visibility/rollback durability tests, passed focused and repo-wide tests/build, and advanced the baton to `T-127` |
 | #033 | 2026-04-22 | Codex | Completed T-127 | Parallelized vacuum implementation/coverage/lint closeout, added `Relation.Vacuum()` plus paged reclamation tests, restored repo-wide `golangci-lint` validation, passed focused and repo-wide tests/build/lint, and advanced the baton to `T-128` |
+| #034 | 2026-04-22 | Codex | Completed T-128 | Parallelized the storage-contract migration with five bounded subagents, extracted a shared storage behavior suite under `internal/storage/storagetest`, adopted it in both memory and paged storage, restored the memory-specific reserved-handle regression, passed focused and repo-wide tests/build/lint, and advanced the baton to `T-130` |
+| #035 | 2026-04-22 | Codex | Completed T-130 | Added logical/planner/executor/embed support for `INNER`/`LEFT`/`RIGHT`/`FULL`/comma-CROSS joins, preserved joined-column provenance and outer-join nullability through lowering, updated SQL-92 join/comma fixtures plus explicit `USING`/`NATURAL` feature errors, passed focused and repo-wide tests/build/lint, and advanced the baton to `T-131` |

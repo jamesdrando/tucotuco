@@ -84,7 +84,7 @@ func (p *buildPass) buildSelect(stmt *parser.SelectStmt) Plan {
 	p.outputTypes = outputs
 	p.outputCursor = 0
 	for _, item := range stmt.SelectList {
-		project.Projections = append(project.Projections, p.buildSelectItem(item)...)
+		project.Projections = append(project.Projections, p.buildSelectItem(item, input)...)
 		if len(p.diagnostics) != 0 {
 			return nil
 		}
@@ -130,12 +130,22 @@ func (p *buildPass) buildSelectInput(stmt *parser.SelectStmt) Plan {
 	if stmt == nil || len(stmt.From) == 0 {
 		return nil
 	}
-	if len(stmt.From) != 1 {
-		p.addFeatureError(stmt.From[1], "multiple FROM sources are not supported in Phase 1 planner")
+
+	input := p.buildFromNode(stmt.From[0])
+	if input == nil || len(p.diagnostics) != 0 {
 		return nil
 	}
 
-	return p.buildFromNode(stmt.From[0])
+	for _, source := range stmt.From[1:] {
+		right := p.buildFromNode(source)
+		if right == nil || len(p.diagnostics) != 0 {
+			return nil
+		}
+
+		input = NewJoin(input, right, "CROSS", nil, joinColumns("CROSS", input.Columns(), right.Columns())...)
+	}
+
+	return input
 }
 
 func (p *buildPass) buildFromNode(node parser.Node) Plan {
@@ -145,8 +155,7 @@ func (p *buildPass) buildFromNode(node parser.Node) Plan {
 	case *parser.FromSource:
 		return p.buildFromSource(node)
 	case *parser.JoinExpr:
-		p.addFeatureError(node, "JOIN planning is not supported in Phase 1 planner")
-		return nil
+		return p.buildJoin(node)
 	default:
 		p.addFeatureError(node, "FROM source is not supported in Phase 1 planner")
 		return nil
@@ -168,41 +177,72 @@ func (p *buildPass) buildFromSource(source *parser.FromSource) Plan {
 
 		return NewScan(relation.TableID, relationColumns(relation)...)
 	case *parser.SelectStmt:
-		return p.buildSelect(inner)
+		return p.attachBoundRelation(p.buildSelect(inner), source)
 	case *parser.JoinExpr:
-		p.addFeatureError(inner, "JOIN planning is not supported in Phase 1 planner")
-		return nil
+		return p.attachBoundRelation(p.buildJoin(inner), source)
 	default:
 		p.addFeatureError(source, "FROM source is not supported in Phase 1 planner")
 		return nil
 	}
 }
 
-func (p *buildPass) buildSelectItem(item *parser.SelectItem) []Projection {
+func (p *buildPass) buildJoin(join *parser.JoinExpr) Plan {
+	if join == nil {
+		return nil
+	}
+	if join.Natural {
+		p.addFeatureError(join, "NATURAL JOIN planning is not supported in Phase 2 planner")
+		return nil
+	}
+	if len(join.Using) != 0 {
+		p.addFeatureError(join, "JOIN ... USING is not supported in Phase 2 planner")
+		return nil
+	}
+
+	left := p.buildFromNode(join.Left)
+	if left == nil || len(p.diagnostics) != 0 {
+		return nil
+	}
+
+	right := p.buildFromNode(join.Right)
+	if right == nil || len(p.diagnostics) != 0 {
+		return nil
+	}
+
+	return NewJoin(left, right, join.Type, join.Condition, joinColumns(join.Type, left.Columns(), right.Columns())...)
+}
+
+func (p *buildPass) buildSelectItem(item *parser.SelectItem, input Plan) []Projection {
 	if item == nil || item.Expr == nil {
 		return nil
 	}
 
 	switch expr := item.Expr.(type) {
 	case *parser.Star:
-		return p.buildStar(expr)
+		return p.buildStar(expr, input)
 	default:
 		desc, ok := p.nextOutputType(item)
 		if !ok {
 			return nil
 		}
 
-		return []Projection{{
-			Expr: expr,
-			Output: Column{
-				Name: projectedColumnName(item),
-				Type: desc,
-			},
-		}}
+		output := Column{
+			Name: projectedColumnName(item),
+			Type: desc,
+		}
+		if binding, ok := p.boundColumn(expr); ok {
+			output.Binding = binding
+			output.RelationName = safeBindingRelation(binding)
+			if matched, ok := matchPlanColumn(input, binding); ok {
+				output.Type = matched.Type
+			}
+		}
+
+		return []Projection{{Expr: expr, Output: output}}
 	}
 }
 
-func (p *buildPass) buildStar(star *parser.Star) []Projection {
+func (p *buildPass) buildStar(star *parser.Star, input Plan) []Projection {
 	if star == nil {
 		return nil
 	}
@@ -225,12 +265,19 @@ func (p *buildPass) buildStar(star *parser.Star) []Projection {
 		if !ok {
 			return nil
 		}
+		output := Column{
+			Name:         safeBindingName(column),
+			Type:         desc,
+			RelationName: safeBindingRelation(column),
+			Binding:      column,
+		}
+		if matched, ok := matchPlanColumn(input, column); ok {
+			output = matched
+		}
+
 		projections = append(projections, Projection{
-			Expr: syntheticColumnRef(column),
-			Output: Column{
-				Name: safeBindingName(column),
-				Type: desc,
-			},
+			Expr:   syntheticColumnRef(column),
+			Output: output,
 		})
 	}
 
@@ -284,6 +331,15 @@ func (p *buildPass) boundRelation(nodes ...parser.Node) (*analyzer.RelationBindi
 	return nil, false
 }
 
+func (p *buildPass) boundColumn(node parser.Node) (*analyzer.ColumnBinding, bool) {
+	bindings := p.bindings()
+	if bindings == nil || node == nil {
+		return nil, false
+	}
+
+	return bindings.Column(node)
+}
+
 func (p *buildPass) bindings() *analyzer.Bindings {
 	if p.builder == nil {
 		return nil
@@ -320,8 +376,10 @@ func relationColumns(relation *analyzer.RelationBinding) []Column {
 	columns := make([]Column, 0, len(relation.Columns))
 	for _, binding := range relation.Columns {
 		columns = append(columns, Column{
-			Name: safeBindingName(binding),
-			Type: bindingType(binding),
+			Name:         safeBindingName(binding),
+			Type:         bindingType(binding),
+			RelationName: safeBindingRelation(binding),
+			Binding:      binding,
 		})
 	}
 
@@ -344,8 +402,147 @@ func safeBindingName(binding *analyzer.ColumnBinding) string {
 	return binding.Name
 }
 
+func safeBindingRelation(binding *analyzer.ColumnBinding) string {
+	if binding == nil || binding.Relation == nil {
+		return ""
+	}
+
+	return binding.Relation.Name
+}
+
 func syntheticColumnRef(binding *analyzer.ColumnBinding) parser.Node {
-	return &parser.Identifier{Name: safeBindingName(binding)}
+	if binding == nil {
+		return &parser.Identifier{}
+	}
+
+	relation := safeBindingRelation(binding)
+	if relation == "" {
+		return &parser.Identifier{Name: safeBindingName(binding)}
+	}
+
+	return &parser.QualifiedName{
+		Parts: []*parser.Identifier{
+			{Name: relation},
+			{Name: safeBindingName(binding)},
+		},
+	}
+}
+
+func joinColumns(joinType string, left []Column, right []Column) []Column {
+	output := make([]Column, 0, len(left)+len(right))
+	output = append(output, outerJoinColumns(left, joinType == "RIGHT" || joinType == "FULL")...)
+	output = append(output, outerJoinColumns(right, joinType == "LEFT" || joinType == "FULL")...)
+	return output
+}
+
+func outerJoinColumns(columns []Column, nullable bool) []Column {
+	out := make([]Column, len(columns))
+	for index, column := range columns {
+		out[index] = column
+		if nullable {
+			out[index].Type.Nullable = true
+		}
+	}
+
+	return out
+}
+
+func matchPlanColumn(plan Plan, binding *analyzer.ColumnBinding) (Column, bool) {
+	if plan == nil || binding == nil {
+		return Column{}, false
+	}
+
+	return matchColumnBinding(plan.Columns(), binding)
+}
+
+func matchColumnBinding(columns []Column, binding *analyzer.ColumnBinding) (Column, bool) {
+	if binding == nil {
+		return Column{}, false
+	}
+
+	for _, column := range columns {
+		if column.Binding == binding {
+			return column, true
+		}
+	}
+
+	relation := safeBindingRelation(binding)
+	if relation != "" {
+		var matches []Column
+		for _, column := range columns {
+			if column.RelationName == relation && column.Name == binding.Name {
+				matches = append(matches, column)
+			}
+		}
+		if len(matches) == 1 {
+			return matches[0], true
+		}
+	}
+
+	var matches []Column
+	for _, column := range columns {
+		if column.Name == binding.Name {
+			matches = append(matches, column)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], true
+	}
+
+	return Column{}, false
+}
+
+func (p *buildPass) attachBoundRelation(plan Plan, source *parser.FromSource) Plan {
+	if plan == nil || source == nil {
+		return plan
+	}
+
+	relation, ok := p.boundRelation(source)
+	if !ok || relation == nil {
+		return plan
+	}
+	if len(relation.Columns) == 0 {
+		return plan
+	}
+
+	switch node := plan.(type) {
+	case *Project:
+		if len(node.Projections) != len(relation.Columns) {
+			p.addInternalError(source, "planner relation metadata does not match derived-table outputs")
+			return nil
+		}
+		for index, binding := range relation.Columns {
+			node.Projections[index].Output = mergeBoundColumn(node.Projections[index].Output, binding)
+		}
+	case *Join:
+		if len(node.OutputColumns) != len(relation.Columns) {
+			p.addInternalError(source, "planner relation metadata does not match joined outputs")
+			return nil
+		}
+		for index, binding := range relation.Columns {
+			node.OutputColumns[index] = mergeBoundColumn(node.OutputColumns[index], binding)
+		}
+	case *Scan:
+		if len(node.OutputColumns) != len(relation.Columns) {
+			p.addInternalError(source, "planner relation metadata does not match scan outputs")
+			return nil
+		}
+		for index, binding := range relation.Columns {
+			node.OutputColumns[index] = mergeBoundColumn(node.OutputColumns[index], binding)
+		}
+	}
+
+	return plan
+}
+
+func mergeBoundColumn(column Column, binding *analyzer.ColumnBinding) Column {
+	column.Binding = binding
+	column.RelationName = safeBindingRelation(binding)
+	if column.Name == "" {
+		column.Name = safeBindingName(binding)
+	}
+
+	return column
 }
 
 func projectedColumnName(item *parser.SelectItem) string {
