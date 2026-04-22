@@ -1,0 +1,13 @@
+CREATE TABLE departments (id INTEGER NOT NULL);
+CREATE TABLE department_leads (department_id INTEGER NOT NULL, lead_name VARCHAR(10) NOT NULL);
+INSERT INTO departments VALUES (1);
+INSERT INTO departments VALUES (2);
+INSERT INTO departments VALUES (3);
+INSERT INTO department_leads VALUES (1, 'alice');
+INSERT INTO department_leads VALUES (2, 'bob');
+SELECT (SELECT l.lead_name FROM department_leads AS l WHERE l.department_id = d.id) AS lead_name FROM departments AS d WHERE d.id = 1;
+SELECT (SELECT l.lead_name FROM department_leads AS l WHERE l.department_id = d.id) AS lead_name FROM departments AS d WHERE d.id = 2;
+SELECT (SELECT l.lead_name FROM department_leads AS l WHERE l.department_id = d.id) AS lead_name FROM departments AS d WHERE d.id = 3;
+SELECT EXISTS (SELECT 1 FROM department_leads AS l WHERE l.department_id = d.id) AS has_lead FROM departments AS d WHERE d.id = 1;
+SELECT EXISTS (SELECT 1 FROM department_leads AS l WHERE l.department_id = d.id) AS has_lead FROM departments AS d WHERE d.id = 3;
+SELECT NOT EXISTS (SELECT 1 FROM department_leads AS l WHERE l.department_id = d.id) AS missing_lead FROM departments AS d WHERE d.id = 3;

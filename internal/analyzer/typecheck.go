@@ -336,6 +336,13 @@ func (p *typeCheckPass) exprType(node parser.Node) sqtypes.TypeDesc {
 		desc = p.caseExprType(node)
 	case *parser.BetweenExpr:
 		desc = p.betweenExprType(node)
+	case *parser.SubqueryExpr:
+		desc = p.scalarSubqueryType(node, node.Query)
+	case *parser.ExistsExpr:
+		if node.Query != nil {
+			p.checkSelect(node.Query)
+		}
+		desc = booleanType(false)
 	case *parser.InExpr:
 		desc = p.inExprType(node)
 	case *parser.LikeExpr:
@@ -348,20 +355,28 @@ func (p *typeCheckPass) exprType(node parser.Node) sqtypes.TypeDesc {
 			desc = types[0]
 		}
 	case *parser.SelectStmt:
-		outputs := p.checkSelect(node)
-		switch len(outputs) {
-		case 0:
-			desc = sqtypes.TypeDesc{}
-		case 1:
-			desc = withNullable(outputs[0], true)
-		default:
-			p.addError(sqlStateDatatypeMismatch, node.Pos(), "scalar subquery returned %d columns", len(outputs))
-			desc = sqtypes.TypeDesc{}
-		}
+		desc = p.scalarSubqueryType(node, node)
 	}
 
 	p.types.bindExpr(node, desc)
 	return desc
+}
+
+func (p *typeCheckPass) scalarSubqueryType(node parser.Node, query *parser.SelectStmt) sqtypes.TypeDesc {
+	if query == nil {
+		return sqtypes.TypeDesc{}
+	}
+
+	outputs := p.checkSelect(query)
+	switch len(outputs) {
+	case 0:
+		return sqtypes.TypeDesc{}
+	case 1:
+		return withNullable(outputs[0], true)
+	default:
+		p.addError(sqlStateDatatypeMismatch, node.Pos(), "scalar subquery returned %d columns", len(outputs))
+		return sqtypes.TypeDesc{}
+	}
 }
 
 func (p *typeCheckPass) boundNodeType(node parser.Node) sqtypes.TypeDesc {
@@ -600,6 +615,22 @@ func (p *typeCheckPass) inExprType(node *parser.InExpr) sqtypes.TypeDesc {
 
 	leftType := p.exprType(node.Expr)
 	nullable := isNullableResult(leftType)
+	if node.Query != nil {
+		outputs := p.checkSelect(node.Query)
+		switch len(outputs) {
+		case 0:
+			return booleanType(nullable)
+		case 1:
+			if _, ok := comparableSuperType(leftType, outputs[0]); !ok {
+				p.addError(sqlStateDatatypeMismatch, node.Query.Pos(), "IN subquery result of type %s is incompatible with left-hand type %s", typeString(outputs[0]), typeString(leftType))
+			}
+			return booleanType(nullable || isNullableResult(outputs[0]))
+		default:
+			p.addError(sqlStateDatatypeMismatch, node.Query.Pos(), "IN subquery returned %d columns", len(outputs))
+			return booleanType(nullable)
+		}
+	}
+
 	for _, item := range node.List {
 		itemType := p.exprType(item)
 		if _, ok := comparableSuperType(leftType, itemType); !ok {

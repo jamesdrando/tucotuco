@@ -1,0 +1,62 @@
+fixture: 061_scalar_subquery
+
+statement 1:
+  sql:
+    CREATE TABLE readings (id INTEGER NOT NULL, amount INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO readings VALUES (1, 10)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO readings VALUES (2, 20)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    SELECT (SELECT 1) AS literal_one
+  result:
+    query
+    columns:
+      [0] literal_one INTEGER
+    rows:
+      [0] 1
+
+statement 5:
+  sql:
+    SELECT (SELECT amount FROM readings WHERE id = 2) AS amount_for_two
+  result:
+    query
+    columns:
+      [0] amount_for_two INTEGER
+    rows:
+      [0] 20
+
+statement 6:
+  sql:
+    SELECT (SELECT amount FROM readings WHERE id = 99) AS missing_amount
+  result:
+    query
+    columns:
+      [0] missing_amount INTEGER
+    rows:
+      [0] NULL
+
+statement 7:
+  sql:
+    SELECT id FROM readings WHERE amount = (SELECT amount FROM readings WHERE id = 1)
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      [0] 1

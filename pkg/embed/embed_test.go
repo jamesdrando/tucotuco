@@ -270,6 +270,78 @@ func TestQueryExecutesJoinShapesEndToEnd(t *testing.T) {
 	}
 }
 
+func TestQueryExecutesSubqueriesEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	db := mustOpenDB(t, filepath.Join(t.TempDir(), "catalog.json"))
+	for _, sql := range []string{
+		"CREATE TABLE departments (id INTEGER NOT NULL, customer_id INTEGER NOT NULL)",
+		"CREATE TABLE customers (customer_id INTEGER NOT NULL, name VARCHAR(20) NOT NULL)",
+		"INSERT INTO departments VALUES (1, 10)",
+		"INSERT INTO departments VALUES (2, 20)",
+		"INSERT INTO departments VALUES (3, 30)",
+		"INSERT INTO customers VALUES (10, 'alice')",
+		"INSERT INTO customers VALUES (30, 'carol')",
+	} {
+		if _, err := db.Exec(sql); err != nil {
+			t.Fatalf("Exec(%q) error = %v", sql, err)
+		}
+	}
+
+	literal, err := db.Query("SELECT (SELECT 1) AS literal_one")
+	if err != nil {
+		t.Fatalf("Query(unrelated scalar subquery) error = %v", err)
+	}
+	if got, want := literal.Rows, [][]any{{int32(1)}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("literal.Rows = %#v, want %#v", got, want)
+	}
+
+	inSubquery, err := db.Query("SELECT id FROM departments WHERE id = 3 AND customer_id IN (SELECT customer_id FROM customers)")
+	if err != nil {
+		t.Fatalf("Query(IN subquery) error = %v", err)
+	}
+	if got, want := inSubquery.Rows, [][]any{{int32(3)}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("inSubquery.Rows = %#v, want %#v", got, want)
+	}
+
+	correlatedScalar, err := db.Query("SELECT (SELECT c.name FROM customers AS c WHERE c.customer_id = d.customer_id) AS customer_name FROM departments AS d WHERE d.id = 1")
+	if err != nil {
+		t.Fatalf("Query(correlated scalar subquery) error = %v", err)
+	}
+	if got, want := correlatedScalar.Rows, [][]any{{"alice"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("correlatedScalar.Rows = %#v, want %#v", got, want)
+	}
+
+	correlatedExists, err := db.Query("SELECT EXISTS (SELECT 1 FROM customers AS c WHERE c.customer_id = d.customer_id) AS has_customer FROM departments AS d WHERE d.id = 2")
+	if err != nil {
+		t.Fatalf("Query(correlated EXISTS) error = %v", err)
+	}
+	if got, want := correlatedExists.Rows, [][]any{{false}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("correlatedExists.Rows = %#v, want %#v", got, want)
+	}
+}
+
+func TestQueryRejectsMultiRowScalarSubquery(t *testing.T) {
+	t.Parallel()
+
+	db := mustOpenDB(t, filepath.Join(t.TempDir(), "catalog.json"))
+	for _, sql := range []string{
+		"CREATE TABLE customers (customer_id INTEGER NOT NULL)",
+		"INSERT INTO customers VALUES (10)",
+		"INSERT INTO customers VALUES (20)",
+	} {
+		if _, err := db.Exec(sql); err != nil {
+			t.Fatalf("Exec(%q) error = %v", sql, err)
+		}
+	}
+
+	_, err := db.Query("SELECT (SELECT customer_id FROM customers) AS customer_id")
+	sqlErr := assertSQLError(t, err)
+	if got, want := sqlErr.Diagnostics[0].SQLState, "21000"; got != want {
+		t.Fatalf("scalar subquery SQLSTATE = %q, want %q", got, want)
+	}
+}
+
 func TestQueryRejectsUnsupportedShapes(t *testing.T) {
 	t.Parallel()
 

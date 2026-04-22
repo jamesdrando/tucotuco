@@ -79,6 +79,76 @@ func TestResolverResolvesDerivedTableColumns(t *testing.T) {
 	}
 }
 
+func TestResolverAllowsCorrelatedExpressionSubqueries(t *testing.T) {
+	t.Parallel()
+
+	cat := testCatalog(t)
+	script := parseScript(t, "SELECT o.id FROM orders AS o WHERE EXISTS (SELECT 1 WHERE o.customer_id = 1)")
+
+	bindings, diags := NewResolver(cat).ResolveScript(script)
+	if len(diags) != 0 {
+		t.Fatalf("ResolveScript() diagnostics = %#v, want none", diags)
+	}
+
+	stmt := script.Nodes[0].(*parser.SelectStmt)
+	exists := stmt.Where.(*parser.ExistsExpr)
+	innerQuery := exists.Query
+	comparison := innerQuery.Where.(*parser.BinaryExpr)
+	column := comparison.Left.(*parser.QualifiedName)
+
+	binding, ok := bindings.Column(column)
+	if !ok {
+		t.Fatalf("Column(correlated column) missing binding")
+	}
+	if binding.Relation == nil || binding.Relation.TableID != (storage.TableID{Schema: "public", Name: "orders"}) {
+		t.Fatalf("binding.Relation = %#v, want outer orders relation", binding.Relation)
+	}
+}
+
+func TestResolverPrefersLocalNamesInsideCorrelatedSubqueries(t *testing.T) {
+	t.Parallel()
+
+	cat := testCatalog(t)
+	script := parseScript(t, "SELECT o.id FROM orders AS o WHERE EXISTS (SELECT 1 FROM customers AS o WHERE o.customer_id = 1)")
+
+	bindings, diags := NewResolver(cat).ResolveScript(script)
+	if len(diags) != 0 {
+		t.Fatalf("ResolveScript() diagnostics = %#v, want none", diags)
+	}
+
+	stmt := script.Nodes[0].(*parser.SelectStmt)
+	exists := stmt.Where.(*parser.ExistsExpr)
+	innerQuery := exists.Query
+	comparison := innerQuery.Where.(*parser.BinaryExpr)
+	column := comparison.Left.(*parser.QualifiedName)
+
+	binding, ok := bindings.Column(column)
+	if !ok {
+		t.Fatalf("Column(local subquery column) missing binding")
+	}
+	if binding.Relation == nil || binding.Relation.TableID != (storage.TableID{Schema: "public", Name: "customers"}) {
+		t.Fatalf("binding.Relation = %#v, want inner customers relation", binding.Relation)
+	}
+}
+
+func TestResolverKeepsDerivedTablesIsolatedFromOuterScope(t *testing.T) {
+	t.Parallel()
+
+	cat := testCatalog(t)
+	script := parseScript(t, "SELECT o.id FROM orders AS o WHERE EXISTS (SELECT 1 FROM (SELECT o.customer_id) AS q)")
+
+	_, diags := NewResolver(cat).ResolveScript(script)
+	if len(diags) != 1 {
+		t.Fatalf("len(diagnostics) = %d, want 1", len(diags))
+	}
+	if diags[0].SQLState != sqlStateUndefinedTable {
+		t.Fatalf("diagnostic SQLSTATE = %q, want %q", diags[0].SQLState, sqlStateUndefinedTable)
+	}
+	if diags[0].Message != `relation "o" does not exist` {
+		t.Fatalf("diagnostic message = %q, want %q", diags[0].Message, `relation "o" does not exist`)
+	}
+}
+
 func TestResolverResolvesCreateTableForeignKeys(t *testing.T) {
 	t.Parallel()
 

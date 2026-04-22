@@ -145,12 +145,27 @@ type BetweenExpr struct {
 	Negated bool
 }
 
+// SubqueryExpr captures a parenthesized scalar subquery expression.
+type SubqueryExpr struct {
+	token.Span
+
+	Query *SelectStmt
+}
+
+// ExistsExpr captures an EXISTS predicate.
+type ExistsExpr struct {
+	token.Span
+
+	Query *SelectStmt
+}
+
 // InExpr captures an IN predicate with an expression list.
 type InExpr struct {
 	token.Span
 
 	Expr    Node
 	List    []Node
+	Query   *SelectStmt
 	Negated bool
 }
 

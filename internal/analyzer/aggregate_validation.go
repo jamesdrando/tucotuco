@@ -418,8 +418,16 @@ func (p *typeCheckPass) groupExprKey(node parser.Node) string {
 		return strings.Join(parts, "|")
 	case *parser.BetweenExpr:
 		return "between(" + p.groupExprKey(node.Expr) + "," + p.groupExprKey(node.Lower) + "," + p.groupExprKey(node.Upper) + ")"
+	case *parser.SubqueryExpr:
+		return "subquery"
+	case *parser.ExistsExpr:
+		return "exists(subquery)"
 	case *parser.InExpr:
 		parts := []string{"in", p.groupExprKey(node.Expr)}
+		if node.Query != nil {
+			parts = append(parts, "subquery")
+			return strings.Join(parts, "|")
+		}
 		for _, item := range node.List {
 			parts = append(parts, p.groupExprKey(item))
 		}
@@ -539,8 +547,16 @@ func forEachAggregateExprChild(node parser.Node, visit func(parser.Node)) {
 		visit(node.Expr)
 		visit(node.Lower)
 		visit(node.Upper)
+	case *parser.SubqueryExpr:
+		visit(node.Query)
+	case *parser.ExistsExpr:
+		visit(node.Query)
 	case *parser.InExpr:
 		visit(node.Expr)
+		if node.Query != nil {
+			visit(node.Query)
+			return
+		}
 		for _, item := range node.List {
 			visit(item)
 		}

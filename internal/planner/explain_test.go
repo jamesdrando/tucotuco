@@ -97,6 +97,25 @@ func TestExplainBuildsStableJoinTree(t *testing.T) {
 	}
 }
 
+func TestExplainFormatsCorrelatedExistsPredicate(t *testing.T) {
+	t.Parallel()
+
+	stmt, bindings, types := analyzeSelect(t, plannerTestCatalog(t), "SELECT o.id FROM orders AS o WHERE EXISTS (SELECT 1 FROM customers AS c WHERE c.customer_id = o.customer_id)")
+
+	plan, diags := NewBuilder(bindings, types).Build(stmt)
+	if len(diags) != 0 {
+		t.Fatalf("Build() diagnostics = %#v, want none", diags)
+	}
+
+	if got, want := Explain(plan), trimExplain(`
+		Project(columns=[id INTEGER NOT NULL])
+		  Filter(predicate=EXISTS (SELECT 1 FROM customers AS c WHERE c.customer_id = o.customer_id))
+		    Scan(table=public.orders, columns=[id INTEGER NOT NULL, customer_id INTEGER, total INTEGER])
+	`); got != want {
+		t.Fatalf("Explain() = %q, want %q", got, want)
+	}
+}
+
 func TestExplainDoesNotEmbedPlannerDiagnostics(t *testing.T) {
 	t.Parallel()
 

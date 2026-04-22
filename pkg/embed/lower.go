@@ -1,11 +1,13 @@
 package embed
 
 import (
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
 
 	"github.com/jamesdrando/tucotuco/internal/analyzer"
+	internaldiag "github.com/jamesdrando/tucotuco/internal/diag"
 	"github.com/jamesdrando/tucotuco/internal/executor"
 	"github.com/jamesdrando/tucotuco/internal/parser"
 	"github.com/jamesdrando/tucotuco/internal/planner"
@@ -13,11 +15,14 @@ import (
 	sqltypes "github.com/jamesdrando/tucotuco/internal/types"
 )
 
+const sqlStateCardinalityViolation = "21000"
+
 type planLowerer struct {
 	bindings *analyzer.Bindings
 	types    *analyzer.Types
 	store    storage.Storage
 	tx       storage.Transaction
+	outer    *correlatedContext
 }
 
 type loweredPlan struct {
@@ -35,6 +40,11 @@ type shapeColumn struct {
 	name     string
 	typ      sqltypes.TypeDesc
 	binding  *analyzer.ColumnBinding
+}
+
+type correlatedContext struct {
+	row   executor.Row
+	shape rowShape
 }
 
 func buildSelectOperator(
@@ -91,7 +101,7 @@ func (l planLowerer) lower(plan planner.Plan) (loweredPlan, error) {
 			return loweredPlan{}, err
 		}
 
-		predicate, err := compileExpression(l.bindings, l.types, node.Predicate, child.shape)
+		predicate, err := compileExpression(l.bindings, l.types, l.store, l.tx, node.Predicate, child.shape)
 		if err != nil {
 			return loweredPlan{}, err
 		}
@@ -109,7 +119,7 @@ func (l planLowerer) lower(plan planner.Plan) (loweredPlan, error) {
 
 		exprs := make([]executor.CompiledExpr, 0, len(node.Projections))
 		for _, projection := range node.Projections {
-			expr, err := compileExpression(l.bindings, l.types, projection.Expr, child.shape)
+			expr, err := compileExpression(l.bindings, l.types, l.store, l.tx, projection.Expr, child.shape)
 			if err != nil {
 				return loweredPlan{}, err
 			}
@@ -118,6 +128,41 @@ func (l planLowerer) lower(plan planner.Plan) (loweredPlan, error) {
 
 		return loweredPlan{
 			op:      executor.NewProject(child.op, exprs...),
+			shape:   shapeFromColumns(node.Columns()),
+			columns: node.Columns(),
+		}, nil
+	case *planner.Join:
+		left, err := l.lower(node.Left)
+		if err != nil {
+			return loweredPlan{}, err
+		}
+		right, err := l.lower(node.Right)
+		if err != nil {
+			return loweredPlan{}, err
+		}
+
+		var predicate executor.CompiledExpr
+		hasPredicate := false
+		if node.Condition != nil {
+			predicate, err = compileExpression(l.bindings, l.types, l.store, l.tx, node.Condition, shapeFromColumns(node.Columns()))
+			if err != nil {
+				return loweredPlan{}, err
+			}
+			hasPredicate = true
+		}
+
+		return loweredPlan{
+			op: newJoinOperator(
+				node.Type,
+				left.op,
+				right.op,
+				predicate,
+				hasPredicate,
+				len(left.shape.columns),
+				len(right.shape.columns),
+				executor.Row{},
+				false,
+			),
 			shape:   shapeFromColumns(node.Columns()),
 			columns: node.Columns(),
 		}, nil
@@ -157,8 +202,9 @@ func (l planLowerer) lowerSelect(stmt *parser.SelectStmt) (loweredPlan, error) {
 	if err != nil {
 		return loweredPlan{}, err
 	}
+	input = l.attachOuter(input)
 	if stmt.Where != nil {
-		predicate, err := compileExpression(l.bindings, l.types, stmt.Where, input.shape)
+		predicate, err := compileExpression(l.bindings, l.types, l.store, l.tx, stmt.Where, input.shape)
 		if err != nil {
 			return loweredPlan{}, err
 		}
@@ -180,11 +226,37 @@ func (l planLowerer) lowerSelectInput(stmt *parser.SelectStmt) (loweredPlan, err
 			shape: rowShape{},
 		}, nil
 	}
-	if len(stmt.From) != 1 {
-		return loweredPlan{}, featureError(stmt.From[1], "multiple FROM sources are not supported in Phase 1 planner")
+
+	input, err := l.lowerFromNode(stmt.From[0])
+	if err != nil {
+		return loweredPlan{}, err
 	}
 
-	return l.lowerFromNode(stmt.From[0])
+	for _, source := range stmt.From[1:] {
+		right, err := l.lowerFromNode(source)
+		if err != nil {
+			return loweredPlan{}, err
+		}
+
+		columns := append(append([]planner.Column(nil), input.columns...), right.columns...)
+		input = loweredPlan{
+			op: newJoinOperator(
+				"CROSS",
+				input.op,
+				right.op,
+				executor.CompiledExpr{},
+				false,
+				len(input.shape.columns),
+				len(right.shape.columns),
+				executor.Row{},
+				false,
+			),
+			shape:   input.shape.append(right.shape),
+			columns: columns,
+		}
+	}
+
+	return input, nil
 }
 
 func (l planLowerer) lowerFromNode(node parser.Node) (loweredPlan, error) {
@@ -256,10 +328,10 @@ func (l planLowerer) lowerJoinExpr(join *parser.JoinExpr) (loweredPlan, error) {
 		}, nil
 	}
 	if join.Natural {
-		return loweredPlan{}, featureError(join, "NATURAL JOIN is not supported in this embed baton")
+		return loweredPlan{}, featureError(join, "NATURAL JOIN planning is not supported in Phase 2 planner")
 	}
 	if len(join.Using) != 0 {
-		return loweredPlan{}, featureError(join, "JOIN USING is not supported in this embed baton")
+		return loweredPlan{}, featureError(join, "JOIN ... USING is not supported in Phase 2 planner")
 	}
 
 	left, err := l.lowerFromNode(join.Left)
@@ -271,17 +343,33 @@ func (l planLowerer) lowerJoinExpr(join *parser.JoinExpr) (loweredPlan, error) {
 		return loweredPlan{}, err
 	}
 
-	shape := left.shape.append(right.shape)
-	columns := append(append([]planner.Column(nil), left.columns...), right.columns...)
+	leftNullable := join.Type == "RIGHT" || join.Type == "FULL"
+	rightNullable := join.Type == "LEFT" || join.Type == "FULL"
+	shape := outerJoinShape(left.shape, leftNullable).append(outerJoinShape(right.shape, rightNullable))
+	columns := append(
+		append([]planner.Column(nil), outerJoinColumns(left.columns, leftNullable)...),
+		outerJoinColumns(right.columns, rightNullable)...,
+	)
 
 	var predicate executor.CompiledExpr
 	hasPredicate := false
 	if join.Condition != nil {
-		predicate, err = compileExpression(l.bindings, l.types, join.Condition, shape)
+		predicateShape := shape
+		if l.outer != nil {
+			predicateShape = predicateShape.append(l.outer.shape)
+		}
+		predicate, err = compileExpression(l.bindings, l.types, l.store, l.tx, join.Condition, predicateShape)
 		if err != nil {
 			return loweredPlan{}, err
 		}
 		hasPredicate = true
+	}
+
+	outerRow := executor.Row{}
+	hasOuter := false
+	if l.outer != nil {
+		outerRow = l.outer.row
+		hasOuter = true
 	}
 
 	return loweredPlan{
@@ -293,6 +381,8 @@ func (l planLowerer) lowerJoinExpr(join *parser.JoinExpr) (loweredPlan, error) {
 			hasPredicate,
 			len(left.shape.columns),
 			len(right.shape.columns),
+			outerRow,
+			hasOuter,
 		),
 		shape:   shape,
 		columns: columns,
@@ -339,6 +429,9 @@ func (l planLowerer) lowerSelectProjection(stmt *parser.SelectStmt, input lowere
 				if err != nil {
 					return loweredPlan{}, err
 				}
+				if binding.Type.Kind != sqltypes.TypeKindInvalid {
+					desc = binding.Type
+				}
 
 				exprs = append(exprs, compiled)
 				columns = append(columns, planner.Column{
@@ -351,8 +444,15 @@ func (l planLowerer) lowerSelectProjection(stmt *parser.SelectStmt, input lowere
 			if !ok {
 				return loweredPlan{}, internalError(item, "embed output metadata does not match the SELECT list")
 			}
+			if l.bindings != nil {
+				if binding, ok := l.bindings.Column(expr); ok && binding != nil {
+					if matched, ok := input.shape.bindingForColumn(binding); ok {
+						desc = matched.Type
+					}
+				}
+			}
 
-			compiled, err := compileExpression(l.bindings, l.types, expr, input.shape)
+			compiled, err := compileExpression(l.bindings, l.types, l.store, l.tx, expr, input.shape)
 			if err != nil {
 				return loweredPlan{}, err
 			}
@@ -376,14 +476,28 @@ func (l planLowerer) lowerSelectProjection(stmt *parser.SelectStmt, input lowere
 	}, nil
 }
 
+func (l planLowerer) attachOuter(input loweredPlan) loweredPlan {
+	if l.outer == nil {
+		return input
+	}
+
+	return loweredPlan{
+		op:      newAppendOuterRowOperator(input.op, l.outer.row),
+		shape:   input.shape.append(l.outer.shape),
+		columns: input.columns,
+	}
+}
+
 func shapeFromColumns(columns []planner.Column) rowShape {
 	shape := rowShape{
 		columns: make([]shapeColumn, 0, len(columns)),
 	}
 	for _, column := range columns {
 		shape.columns = append(shape.columns, shapeColumn{
-			name: column.Name,
-			typ:  column.Type,
+			relation: column.RelationName,
+			name:     column.Name,
+			typ:      column.Type,
+			binding:  column.Binding,
 		})
 	}
 
@@ -429,12 +543,16 @@ func columnsFromRelationBinding(relation *analyzer.RelationBinding, types *analy
 func compileExpression(
 	bindings *analyzer.Bindings,
 	types *analyzer.Types,
+	store storage.Storage,
+	tx storage.Transaction,
 	node parser.Node,
 	shape rowShape,
 ) (executor.CompiledExpr, error) {
 	return executor.CompileExpr(node, expressionMetadata{
 		bindings: bindings,
 		types:    types,
+		store:    store,
+		tx:       tx,
 		shape:    shape,
 	})
 }
@@ -442,6 +560,8 @@ func compileExpression(
 type expressionMetadata struct {
 	bindings *analyzer.Bindings
 	types    *analyzer.Types
+	store    storage.Storage
+	tx       storage.Transaction
 	shape    rowShape
 }
 
@@ -476,6 +596,181 @@ func (m expressionMetadata) BindingOf(node parser.Node) (executor.OrdinalBinding
 	default:
 		return executor.OrdinalBinding{}, false
 	}
+}
+
+func (m expressionMetadata) CompileSubquery(node parser.Node) (executor.CompiledExpr, error) {
+	switch node := node.(type) {
+	case *parser.SubqueryExpr:
+		return m.compileScalarSubquery(node)
+	case *parser.ExistsExpr:
+		return m.compileExistsSubquery(node)
+	case *parser.InExpr:
+		if node != nil && node.Query != nil {
+			return m.compileInSubquery(node)
+		}
+	}
+
+	return executor.CompiledExpr{}, fmt.Errorf("%w: %T", executor.ErrUnsupportedExpression, node)
+}
+
+func (m expressionMetadata) compileScalarSubquery(node *parser.SubqueryExpr) (executor.CompiledExpr, error) {
+	desc, _ := m.TypeOf(node)
+	return executor.NewCompiledExpr(
+		desc,
+		func(row executor.Row) (sqltypes.Value, error) {
+			rows, columns, err := m.materializeSubquery(node.Query, row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			column, err := requireSingleSubqueryColumn(node, columns, "scalar subquery")
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			if len(rows) == 0 {
+				return sqltypes.NullValue(), nil
+			}
+			if len(rows) > 1 {
+				return sqltypes.Value{}, cardinalityError(node, "scalar subquery returned more than one row")
+			}
+
+			value, ok := rows[0].Value(0)
+			if !ok {
+				return sqltypes.Value{}, internalError(node, "scalar subquery row is missing its projected column")
+			}
+			if column.Type.Kind != sqltypes.TypeKindInvalid {
+				return value, nil
+			}
+
+			return value, nil
+		},
+	), nil
+}
+
+func (m expressionMetadata) compileExistsSubquery(node *parser.ExistsExpr) (executor.CompiledExpr, error) {
+	desc, ok := m.TypeOf(node)
+	if !ok {
+		desc = sqltypes.TypeDesc{Kind: sqltypes.TypeKindBoolean}
+	}
+
+	return executor.NewCompiledExpr(
+		desc,
+		func(row executor.Row) (sqltypes.Value, error) {
+			rows, _, err := m.materializeSubquery(node.Query, row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			return sqltypes.BoolValue(len(rows) != 0), nil
+		},
+	), nil
+}
+
+func (m expressionMetadata) compileInSubquery(node *parser.InExpr) (executor.CompiledExpr, error) {
+	expr, err := executor.CompileExpr(node.Expr, m)
+	if err != nil {
+		return executor.CompiledExpr{}, err
+	}
+
+	desc, ok := m.TypeOf(node)
+	if !ok {
+		desc = sqltypes.TypeDesc{Kind: sqltypes.TypeKindBoolean, Nullable: true}
+	}
+
+	return executor.NewCompiledExpr(
+		desc,
+		func(row executor.Row) (sqltypes.Value, error) {
+			leftValue, err := expr.Eval(row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+			if leftValue.IsNull() {
+				return sqltypes.NullValue(), nil
+			}
+
+			rows, columns, err := m.materializeSubquery(node.Query, row)
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			column, err := requireSingleSubqueryColumn(node, columns, "IN subquery")
+			if err != nil {
+				return sqltypes.Value{}, err
+			}
+
+			sawNull := false
+			for _, subqueryRow := range rows {
+				itemValue, ok := subqueryRow.Value(0)
+				if !ok {
+					return sqltypes.Value{}, internalError(node, "IN subquery row is missing its projected column")
+				}
+				if itemValue.IsNull() {
+					sawNull = true
+					continue
+				}
+
+				comparison, err := executor.CompareValues(leftValue, expr.Type(), itemValue, column.Type)
+				if err != nil {
+					return sqltypes.Value{}, err
+				}
+				if comparison == 0 {
+					return sqltypes.BoolValue(!node.Negated), nil
+				}
+			}
+
+			if sawNull {
+				return sqltypes.NullValue(), nil
+			}
+
+			return sqltypes.BoolValue(node.Negated), nil
+		},
+	), nil
+}
+
+func (m expressionMetadata) materializeSubquery(query *parser.SelectStmt, outerRow executor.Row) ([]executor.Row, []planner.Column, error) {
+	lowerer := planLowerer{
+		bindings: m.bindings,
+		types:    m.types,
+		store:    m.store,
+		tx:       m.tx,
+		outer: &correlatedContext{
+			row:   outerRow.Clone(),
+			shape: m.shape,
+		},
+	}
+
+	lowered, err := lowerer.lowerSelect(query)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rows, err := materializeRows(lowered.op)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return rows, lowered.columns, nil
+}
+
+func requireSingleSubqueryColumn(node parser.Node, columns []planner.Column, context string) (planner.Column, error) {
+	switch len(columns) {
+	case 1:
+		return columns[0], nil
+	case 0:
+		return planner.Column{}, internalError(node, "%s did not produce any columns", context)
+	default:
+		return planner.Column{}, internalError(node, "%s returned %d columns", context, len(columns))
+	}
+}
+
+func cardinalityError(node parser.Node, format string, args ...any) error {
+	return diagnosticError(
+		internaldiag.NewError(
+			sqlStateCardinalityViolation,
+			fmt.Sprintf(format, args...),
+			nodePosition(node),
+		),
+	)
 }
 
 func (s rowShape) bindingForColumn(column *analyzer.ColumnBinding) (executor.OrdinalBinding, bool) {
@@ -571,6 +866,35 @@ func (s rowShape) append(other rowShape) rowShape {
 	shape.columns = append(shape.columns, s.columns...)
 	shape.columns = append(shape.columns, other.columns...)
 	return shape
+}
+
+func outerJoinShape(shape rowShape, nullable bool) rowShape {
+	if !nullable {
+		return shape
+	}
+
+	out := rowShape{
+		columns: make([]shapeColumn, len(shape.columns)),
+	}
+	copy(out.columns, shape.columns)
+	for index := range out.columns {
+		out.columns[index].typ.Nullable = true
+	}
+
+	return out
+}
+
+func outerJoinColumns(columns []planner.Column, nullable bool) []planner.Column {
+	out := append([]planner.Column(nil), columns...)
+	if !nullable {
+		return out
+	}
+
+	for index := range out {
+		out[index].Type.Nullable = true
+	}
+
+	return out
 }
 
 func (s rowShape) relabel(relation *analyzer.RelationBinding, types *analyzer.Types) rowShape {
@@ -860,6 +1184,8 @@ type joinOperator struct {
 	hasPredicate bool
 	leftWidth    int
 	rightWidth   int
+	outer        executor.Row
+	hasOuter     bool
 
 	open      bool
 	closed    bool
@@ -886,6 +1212,8 @@ func newJoinOperator(
 	hasPredicate bool,
 	leftWidth int,
 	rightWidth int,
+	outer executor.Row,
+	hasOuter bool,
 ) *joinOperator {
 	return &joinOperator{
 		left:         left,
@@ -895,6 +1223,8 @@ func newJoinOperator(
 		hasPredicate: hasPredicate,
 		leftWidth:    leftWidth,
 		rightWidth:   rightWidth,
+		outer:        outer.Clone(),
+		hasOuter:     hasOuter,
 	}
 }
 
@@ -1037,6 +1367,9 @@ func (o *joinOperator) matches(left executor.Row, right executor.Row) (bool, err
 	}
 
 	row := joinRows(left, right)
+	if o.hasOuter {
+		row = appendOuterRow(row, o.outer)
+	}
 	value, err := o.predicate.Eval(row)
 	if err != nil {
 		return false, err
@@ -1097,6 +1430,15 @@ func joinRows(left executor.Row, right executor.Row) executor.Row {
 	return executor.NewRow(values...)
 }
 
+func appendOuterRow(row executor.Row, outer executor.Row) executor.Row {
+	if outer.Len() == 0 {
+		return row
+	}
+
+	values := append(row.Values(), outer.Values()...)
+	return executor.NewRowWithHandle(row.Handle, values...)
+}
+
 func zeroRow(width int) executor.Row {
 	values := make([]sqltypes.Value, width)
 	for index := range values {
@@ -1142,6 +1484,71 @@ func (o *oneRowOperator) Next() (executor.Row, error) {
 func (o *oneRowOperator) Close() error {
 	o.closed = true
 	o.open = false
+	return nil
+}
+
+type appendOuterRowOperator struct {
+	child     executor.Operator
+	childOpen bool
+	open      bool
+	closed    bool
+	outer     executor.Row
+}
+
+func newAppendOuterRowOperator(child executor.Operator, outer executor.Row) *appendOuterRowOperator {
+	return &appendOuterRowOperator{
+		child: child,
+		outer: outer.Clone(),
+	}
+}
+
+func (o *appendOuterRowOperator) Open() error {
+	switch {
+	case o.closed:
+		return executor.ErrOperatorClosed
+	case o.open:
+		return executor.ErrOperatorOpen
+	case o.child == nil:
+		return internalError(nil, "append-outer child operator is nil")
+	}
+
+	if err := o.child.Open(); err != nil {
+		return err
+	}
+
+	o.childOpen = true
+	o.open = true
+	return nil
+}
+
+func (o *appendOuterRowOperator) Next() (executor.Row, error) {
+	switch {
+	case !o.open && !o.closed:
+		return executor.Row{}, executor.ErrOperatorNotOpen
+	case o.closed:
+		return executor.Row{}, executor.ErrOperatorClosed
+	}
+
+	row, err := o.child.Next()
+	if err != nil {
+		return executor.Row{}, err
+	}
+
+	return appendOuterRow(row, o.outer), nil
+}
+
+func (o *appendOuterRowOperator) Close() error {
+	child := o.child
+	childOpen := o.childOpen
+
+	o.open = false
+	o.closed = true
+	o.childOpen = false
+
+	if childOpen && child != nil {
+		return child.Close()
+	}
+
 	return nil
 }
 

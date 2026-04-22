@@ -240,7 +240,9 @@
   - Added a logical planner join node plus nested-loop executor/lowering support for `INNER`, `LEFT`, `RIGHT`, `FULL`, and comma/CROSS joins, preserving joined-column source metadata and outer-join nullability through planner/executor/embed/compliance coverage.
   - `JOIN ... USING` and `NATURAL JOIN` remain explicit feature errors in this baton; their merged-column semantics are still open beyond `T-130`.
 
-- [ ] **T-131** — Subqueries: scalar, `EXISTS`, `IN`, correlated `[serial]` `depends: M1`
+- [x] **T-131** — Subqueries: scalar, `EXISTS`, `IN`, correlated `[serial]` `depends: M1`
+  - Added explicit parser/analyzer support for scalar subqueries, `EXISTS`, `IN (SELECT ...)`, and correlated outer-scope resolution with local-first shadowing while keeping derived-table `FROM` subqueries non-lateral.
+  - Extended embed/executor lowering to execute scalar/`EXISTS`/`IN` subqueries with correlated outer-row binding, scalar cardinality diagnostics, planner `Join` lowering for comma/CROSS paths, and new SQL-92 golden coverage in `061_064`.
 
 - [ ] **T-132** — UNION / INTERSECT / EXCEPT `[parallel-safe]` `depends: M1`
 

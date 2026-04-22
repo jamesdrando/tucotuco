@@ -56,6 +56,42 @@ func TestAggregatePlacementAllowsAggregateInsideDerivedTable(t *testing.T) {
 	}
 }
 
+func TestAggregatePlacementAllowsAggregateInsideScalarSubquery(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT (SELECT COUNT(*) FROM orders) FROM orders")
+
+	_, diags := typeCheckAndValidateAggregatePlacementSQL(t, cat, script)
+	if len(diags) != 0 {
+		t.Fatalf("validateAggregatePlacement() diagnostics = %#v, want none", diags)
+	}
+}
+
+func TestAggregatePlacementAllowsAggregateInsideExistsSubquery(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT customer_id FROM orders WHERE EXISTS (SELECT COUNT(*) FROM orders)")
+
+	_, diags := typeCheckAndValidateAggregatePlacementSQL(t, cat, script)
+	if len(diags) != 0 {
+		t.Fatalf("validateAggregatePlacement() diagnostics = %#v, want none", diags)
+	}
+}
+
+func TestAggregatePlacementAllowsAggregateInsideInSubquery(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT customer_id IN (SELECT MAX(total) FROM orders) FROM orders")
+
+	_, diags := typeCheckAndValidateAggregatePlacementSQL(t, cat, script)
+	if len(diags) != 0 {
+		t.Fatalf("validateAggregatePlacement() diagnostics = %#v, want none", diags)
+	}
+}
+
 func TestAggregatePlacementReportsAggregateInWhereClause(t *testing.T) {
 	t.Parallel()
 

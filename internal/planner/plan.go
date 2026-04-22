@@ -440,6 +440,10 @@ func formatExpr(node parser.Node) string {
 		return "CAST(" + formatExpr(expr.Expr) + " AS " + formatTypeName(expr.Type) + ")"
 	case *parser.BetweenExpr:
 		return formatBetweenExpr(expr)
+	case *parser.SubqueryExpr:
+		return "(" + formatSelectQuery(expr.Query) + ")"
+	case *parser.ExistsExpr:
+		return "EXISTS (" + formatSelectQuery(expr.Query) + ")"
 	case *parser.InExpr:
 		return formatInExpr(expr)
 	case *parser.LikeExpr:
@@ -508,6 +512,15 @@ func formatInExpr(expr *parser.InExpr) string {
 		return ""
 	}
 
+	if expr.Query != nil {
+		operator := " IN "
+		if expr.Negated {
+			operator = " NOT IN "
+		}
+
+		return formatExpr(expr.Expr) + operator + "(" + formatSelectQuery(expr.Query) + ")"
+	}
+
 	values := make([]string, 0, len(expr.List))
 	for _, item := range expr.List {
 		values = append(values, formatExpr(item))
@@ -519,6 +532,82 @@ func formatInExpr(expr *parser.InExpr) string {
 	}
 
 	return formatExpr(expr.Expr) + operator + "(" + strings.Join(values, ", ") + ")"
+}
+
+func formatSelectQuery(stmt *parser.SelectStmt) string {
+	if stmt == nil {
+		return ""
+	}
+
+	parts := []string{"SELECT " + formatSelectList(stmt.SelectList)}
+	if len(stmt.From) != 0 {
+		parts = append(parts, "FROM "+formatFromNodes(stmt.From))
+	}
+	if stmt.Where != nil {
+		parts = append(parts, "WHERE "+formatExpr(stmt.Where))
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func formatSelectList(items []*parser.SelectItem) string {
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		if item == nil || item.Expr == nil {
+			continue
+		}
+
+		text := formatExpr(item.Expr)
+		if item.Alias != nil {
+			text += " AS " + item.Alias.Name
+		}
+		parts = append(parts, text)
+	}
+
+	return strings.Join(parts, ", ")
+}
+
+func formatFromNodes(nodes []parser.Node) string {
+	parts := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		parts = append(parts, formatFromNode(node))
+	}
+
+	return strings.Join(parts, ", ")
+}
+
+func formatFromNode(node parser.Node) string {
+	switch node := node.(type) {
+	case nil:
+		return ""
+	case *parser.FromSource:
+		text := formatFromNode(node.Source)
+		if node.Alias != nil {
+			text += " AS " + node.Alias.Name
+		}
+		return text
+	case *parser.JoinExpr:
+		text := formatFromNode(node.Left) + " " + node.Type + " JOIN " + formatFromNode(node.Right)
+		if node.Condition != nil {
+			text += " ON " + formatExpr(node.Condition)
+		}
+		if len(node.Using) != 0 {
+			names := make([]string, 0, len(node.Using))
+			for _, item := range node.Using {
+				if item != nil {
+					names = append(names, item.Name)
+				}
+			}
+			text += " USING (" + strings.Join(names, ", ") + ")"
+		}
+		return text
+	case *parser.QualifiedName:
+		return formatQualifiedName(node)
+	case *parser.SelectStmt:
+		return "(" + formatSelectQuery(node) + ")"
+	default:
+		return formatExpr(node)
+	}
 }
 
 func formatLikeExpr(expr *parser.LikeExpr) string {

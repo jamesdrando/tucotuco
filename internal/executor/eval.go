@@ -49,6 +49,12 @@ type ExpressionMetadata interface {
 	BindingOf(node parser.Node) (OrdinalBinding, bool)
 }
 
+// SubqueryCompiler optionally extends ExpressionMetadata with runtime support
+// for subquery-shaped parser nodes.
+type SubqueryCompiler interface {
+	CompileSubquery(node parser.Node) (CompiledExpr, error)
+}
+
 // Metadata is the default map-backed ExpressionMetadata implementation.
 type Metadata struct {
 	Types    map[parser.Node]sqltypes.TypeDesc
@@ -84,6 +90,18 @@ func (m Metadata) BindingOf(node parser.Node) (OrdinalBinding, bool) {
 type CompiledExpr struct {
 	typ  sqltypes.TypeDesc
 	eval func(Row) (sqltypes.Value, error)
+}
+
+// NewCompiledExpr constructs one executor-native compiled expression from an
+// analyzed result type and an evaluation closure.
+func NewCompiledExpr(
+	desc sqltypes.TypeDesc,
+	eval func(Row) (sqltypes.Value, error),
+) CompiledExpr {
+	return CompiledExpr{
+		typ:  desc,
+		eval: eval,
+	}
 }
 
 // Eval evaluates the compiled expression for one row.
@@ -139,6 +157,10 @@ func (c compiler) compile(node parser.Node) (CompiledExpr, error) {
 		return c.compileCastExpr(node)
 	case *parser.BetweenExpr:
 		return c.compileBetweenExpr(node)
+	case *parser.SubqueryExpr:
+		return c.compileSubquery(node)
+	case *parser.ExistsExpr:
+		return c.compileSubquery(node)
 	case *parser.InExpr:
 		return c.compileInExpr(node)
 	case *parser.LikeExpr:
@@ -150,6 +172,15 @@ func (c compiler) compile(node parser.Node) (CompiledExpr, error) {
 	default:
 		return CompiledExpr{}, fmt.Errorf("%w: %T", ErrUnsupportedExpression, node)
 	}
+}
+
+func (c compiler) compileSubquery(node parser.Node) (CompiledExpr, error) {
+	compiler, ok := c.metadata.(SubqueryCompiler)
+	if !ok {
+		return CompiledExpr{}, fmt.Errorf("%w: %T", ErrUnsupportedExpression, node)
+	}
+
+	return compiler.CompileSubquery(node)
 }
 
 func (c compiler) compileBoundReference(node parser.Node) (CompiledExpr, error) {
@@ -705,6 +736,10 @@ func (c compiler) compileBetweenExpr(node *parser.BetweenExpr) (CompiledExpr, er
 }
 
 func (c compiler) compileInExpr(node *parser.InExpr) (CompiledExpr, error) {
+	if node != nil && node.Query != nil {
+		return c.compileSubquery(node)
+	}
+
 	expr, err := c.compile(node.Expr)
 	if err != nil {
 		return CompiledExpr{}, err
@@ -1914,6 +1949,17 @@ func compareValues(leftValue sqltypes.Value, leftType sqltypes.TypeDesc, rightVa
 	}
 
 	return leftValue.Compare(rightValue)
+}
+
+// CompareValues compares two values using the executor's SQL runtime
+// comparison rules for the supplied analyzed types.
+func CompareValues(
+	leftValue sqltypes.Value,
+	leftType sqltypes.TypeDesc,
+	rightValue sqltypes.Value,
+	rightType sqltypes.TypeDesc,
+) (int, error) {
+	return compareValues(leftValue, leftType, rightValue, rightType)
 }
 
 func applyComparisonOperator(operator string, comparison int) bool {

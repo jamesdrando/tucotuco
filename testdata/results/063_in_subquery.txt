@@ -1,0 +1,59 @@
+fixture: 063_in_subquery
+
+statement 1:
+  sql:
+    CREATE TABLE orders (id INTEGER NOT NULL, customer_id INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO orders VALUES (10, 1)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO orders VALUES (11, 3)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    INSERT INTO orders VALUES (12, 3)
+  result:
+    ok
+    rows_affected: 1
+
+statement 5:
+  sql:
+    SELECT 1 IN (SELECT customer_id FROM orders)
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 6:
+  sql:
+    SELECT 2 IN (SELECT customer_id FROM orders)
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] false
+
+statement 7:
+  sql:
+    SELECT id FROM orders WHERE id = 11 AND customer_id IN (SELECT customer_id FROM orders WHERE customer_id = 3)
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      [0] 11

@@ -181,6 +181,9 @@ func TestParseExpr(t *testing.T) {
 		{name: "not between", input: "a NOT BETWEEN 1 AND 2", want: "not between(id(a), int(1), int(2))"},
 		{name: "in list", input: "a IN (1, 2, 3)", want: "in(id(a), [int(1), int(2), int(3)])"},
 		{name: "not in list", input: "a NOT IN (1, 2)", want: "not in(id(a), [int(1), int(2)])"},
+		{name: "in subquery", input: "a IN (SELECT id FROM orders)", want: "in(id(a), subquery(select([item(id(id))] FROM [from(name(orders))])))"},
+		{name: "scalar subquery", input: "(SELECT 1)", want: "subquery(select([item(int(1))]))"},
+		{name: "exists subquery", input: "EXISTS (SELECT 1 FROM orders)", want: "exists(select([item(int(1))] FROM [from(name(orders))]))"},
 		{name: "like escape", input: "a LIKE 'x%' ESCAPE '!'", want: `like(id(a), string("x%"), string("!"))`},
 		{name: "is not null", input: "a IS NOT NULL", want: "is(id(a) NOT NULL)"},
 		{name: "is distinct from", input: "a IS DISTINCT FROM b", want: "is(id(a) DISTINCT FROM id(b))"},
@@ -388,6 +391,11 @@ func TestParseScriptSelectStatements(t *testing.T) {
 			name:  "derived table",
 			input: "SELECT q.id FROM (SELECT id FROM orders) AS q",
 			want:  "script([select([item(name(q.id))] FROM [from(select([item(id(id))] FROM [from(name(orders))]) AS id(q))])])",
+		},
+		{
+			name:  "subquery expressions",
+			input: "SELECT (SELECT o.customer_id), EXISTS (SELECT 1 FROM customers c WHERE c.id = o.id), o.id FROM orders AS o",
+			want:  "script([select([item(subquery(select([item(name(o.customer_id))]))), item(exists(select([item(int(1))] FROM [from(name(customers) AS id(c))] WHERE (name(c.id) = name(o.id))))), item(name(o.id))] FROM [from(name(orders) AS id(o))])])",
 		},
 	}
 
@@ -727,14 +735,21 @@ func renderNode(node Node) string {
 			prefix = "not between"
 		}
 		return fmt.Sprintf("%s(%s, %s, %s)", prefix, renderNode(node.Expr), renderNode(node.Lower), renderNode(node.Upper))
+	case *SubqueryExpr:
+		return fmt.Sprintf("subquery(%s)", renderNode(node.Query))
+	case *ExistsExpr:
+		return fmt.Sprintf("exists(%s)", renderNode(node.Query))
 	case *InExpr:
-		items := make([]string, 0, len(node.List))
-		for _, item := range node.List {
-			items = append(items, renderNode(item))
-		}
 		prefix := "in"
 		if node.Negated {
 			prefix = "not in"
+		}
+		if node.Query != nil {
+			return fmt.Sprintf("%s(%s, subquery(%s))", prefix, renderNode(node.Expr), renderNode(node.Query))
+		}
+		items := make([]string, 0, len(node.List))
+		for _, item := range node.List {
+			items = append(items, renderNode(item))
 		}
 		return fmt.Sprintf("%s(%s, [%s])", prefix, renderNode(node.Expr), strings.Join(items, ", "))
 	case *LikeExpr:

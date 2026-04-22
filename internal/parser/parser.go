@@ -1180,6 +1180,8 @@ func (p *Parser) parsePrimary() Node {
 		case tok.IsKeyword("NULL"):
 			p.consumeSignificant()
 			return &NullLiteral{Span: tok.Span}
+		case tok.IsKeyword("EXISTS"):
+			return p.parseExistsExpr()
 		case tok.IsKeyword("CASE"):
 			return p.parseCaseExpr()
 		case tok.IsKeyword("CAST"):
@@ -1214,16 +1216,32 @@ func (p *Parser) parsePrimary() Node {
 			return nil
 		}
 
-		p.consumeSignificant()
-		expr := p.parseExpr()
-		p.expectPunctuation(")")
-
-		return expr
+		return p.parseParenthesizedPrimary()
 	default:
 		p.consumeSignificant()
 		p.addError(tok, fmt.Sprintf("expected expression, found %s", describeToken(tok)))
 		return nil
 	}
+}
+
+func (p *Parser) parseParenthesizedPrimary() Node {
+	open := p.consumeSignificant()
+	if p.matchKeyword("SELECT") {
+		query := p.parseSelect()
+		closeTok := p.expectPunctuation(")")
+		return &SubqueryExpr{
+			Span: token.Span{
+				Start: open.Pos(),
+				Stop:  spanEnd(closeTok, spanFromNode(query, open.End())),
+			},
+			Query: query,
+		}
+	}
+
+	expr := p.parseExpr()
+	p.expectPunctuation(")")
+
+	return expr
 }
 
 func (p *Parser) parseFunctionCall() Node {
@@ -1356,6 +1374,21 @@ func (p *Parser) parseCastExpr() Node {
 	}
 
 	return cast
+}
+
+func (p *Parser) parseExistsExpr() Node {
+	existsTok := p.consumeSignificant()
+	p.expectPunctuation("(")
+	query := p.parseRequiredSelect("EXISTS")
+	closeTok := p.expectPunctuation(")")
+
+	return &ExistsExpr{
+		Span: token.Span{
+			Start: existsTok.Pos(),
+			Stop:  spanEnd(closeTok, spanFromNode(query, existsTok.End())),
+		},
+		Query: query,
+	}
 }
 
 func (p *Parser) parseNameOrStar() Node {
@@ -1539,6 +1572,21 @@ func (p *Parser) finishBetweenExpr(left Node, negated bool) Node {
 func (p *Parser) finishInExpr(left Node, negated bool) Node {
 	p.expectPunctuation("(")
 
+	if p.matchKeyword("SELECT") {
+		query := p.parseSelect()
+		closeTok := p.expectPunctuation(")")
+
+		return &InExpr{
+			Span: token.Span{
+				Start: nodePos(left),
+				Stop:  spanEnd(closeTok, nodeEnd(left)),
+			},
+			Expr:    left,
+			Query:   query,
+			Negated: negated,
+		}
+	}
+
 	list := make([]Node, 0, 4)
 	if !p.matchPunctuation(")") {
 		for {
@@ -1662,6 +1710,16 @@ func (p *Parser) parseParenthesizedExpr(context string) (Node, token.Pos) {
 
 	closeTok := p.expectPunctuation(")")
 	return expr, spanEnd(closeTok, stop)
+}
+
+func (p *Parser) parseRequiredSelect(context string) *SelectStmt {
+	if p.matchKeyword("SELECT") {
+		return p.parseSelect()
+	}
+
+	tok := p.peekSignificant()
+	p.addError(tok, fmt.Sprintf("expected SELECT in %s, found %s", context, describeToken(tok)))
+	return nil
 }
 
 func (p *Parser) parseTypeSpec() *TypeName {

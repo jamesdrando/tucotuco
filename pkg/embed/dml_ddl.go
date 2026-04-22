@@ -71,7 +71,7 @@ func (s *session) execInsert(ctx *analysisContext, stmt *parser.InsertStmt) (Com
 
 	switch source := stmt.Source.(type) {
 	case *parser.InsertValuesSource:
-		rows, err := buildInsertRows(ctx, relation, columnMap, source.Rows)
+		rows, err := buildInsertRows(ctx, s.store, s.tx, relation, columnMap, source.Rows)
 		if err != nil {
 			return CommandResult{}, err
 		}
@@ -134,7 +134,7 @@ func (s *session) execUpdate(ctx *analysisContext, stmt *parser.UpdateStmt) (Com
 			update.Ordinals = append(update.Ordinals, index)
 		}
 		for _, value := range assignment.Values {
-			compiled, err := compileExpression(ctx.bindings, ctx.types, value, shape)
+			compiled, err := compileExpression(ctx.bindings, ctx.types, s.store, s.tx, value, shape)
 			if err != nil {
 				return CommandResult{}, err
 			}
@@ -261,6 +261,8 @@ func checkOmittedInsertColumns(columns []catalog.ColumnDescriptor) error {
 
 func buildInsertRows(
 	ctx *analysisContext,
+	store storage.Storage,
+	tx storage.Transaction,
 	relation *analyzer.RelationBinding,
 	mapping []int,
 	rows [][]parser.Node,
@@ -278,7 +280,7 @@ func buildInsertRows(
 				return nil, internalError(nil, "INSERT row source index %d out of range", sourceIndex)
 			}
 
-			compiled, err := compileExpression(ctx.bindings, ctx.types, sourceRow[sourceIndex], rowShape{})
+			compiled, err := compileExpression(ctx.bindings, ctx.types, store, tx, sourceRow[sourceIndex], rowShape{})
 			if err != nil {
 				return nil, err
 			}
@@ -333,7 +335,7 @@ func buildTargetScan(
 		return child, shape, nil
 	}
 
-	predicate, err := compileExpression(bindings, types, where, shape)
+	predicate, err := compileExpression(bindings, types, store, tx, where, shape)
 	if err != nil {
 		return nil, rowShape{}, err
 	}

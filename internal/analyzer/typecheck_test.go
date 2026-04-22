@@ -56,6 +56,29 @@ func TestTypeCheckerAssignsDerivedTableTypes(t *testing.T) {
 	}
 }
 
+func TestTypeCheckerAssignsSubqueryExpressionTypes(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT (SELECT o.id), EXISTS (SELECT 1 FROM orders i WHERE i.customer_id = o.customer_id), customer_id IN (SELECT id FROM orders) FROM orders AS o")
+
+	typed, diags := typeCheckSQL(t, cat, script)
+	if len(diags) != 0 {
+		t.Fatalf("CheckScript() diagnostics = %#v, want none", diags)
+	}
+
+	stmt := script.Nodes[0].(*parser.SelectStmt)
+	if got, ok := typed.Expr(stmt.SelectList[0].Expr); !ok || got != mustAnalyzerTypeDesc(t, "INTEGER") {
+		t.Fatalf("Expr(scalar subquery) = (%#v, %t), want INTEGER", got, ok)
+	}
+	if got, ok := typed.Expr(stmt.SelectList[1].Expr); !ok || got != mustAnalyzerTypeDesc(t, "BOOLEAN NOT NULL") {
+		t.Fatalf("Expr(EXISTS) = (%#v, %t), want BOOLEAN NOT NULL", got, ok)
+	}
+	if got, ok := typed.Expr(stmt.SelectList[2].Expr); !ok || got != mustAnalyzerTypeDesc(t, "BOOLEAN") {
+		t.Fatalf("Expr(IN subquery) = (%#v, %t), want BOOLEAN", got, ok)
+	}
+}
+
 func TestTypeCheckerAssignsCaseAndCastTypes(t *testing.T) {
 	t.Parallel()
 
@@ -163,6 +186,60 @@ func TestTypeCheckerReportsQualifiedFunctionAsUndefined(t *testing.T) {
 		t.Fatalf("diagnostic SQLSTATE = %q, want %q", diags[0].SQLState, sqlStateUndefinedFunc)
 	}
 	if diags[0].Message != `function "analytics.count" does not exist` {
+		t.Fatalf("diagnostic message = %q", diags[0].Message)
+	}
+}
+
+func TestTypeCheckerReportsScalarSubqueryShapeMismatch(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT (SELECT id, total FROM orders)")
+
+	_, diags := typeCheckSQL(t, cat, script)
+	if len(diags) != 1 {
+		t.Fatalf("len(diagnostics) = %d, want 1", len(diags))
+	}
+	if diags[0].SQLState != sqlStateDatatypeMismatch {
+		t.Fatalf("diagnostic SQLSTATE = %q, want %q", diags[0].SQLState, sqlStateDatatypeMismatch)
+	}
+	if diags[0].Message != "scalar subquery returned 2 columns" {
+		t.Fatalf("diagnostic message = %q", diags[0].Message)
+	}
+}
+
+func TestTypeCheckerReportsInSubqueryShapeMismatch(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT customer_id IN (SELECT id, total FROM orders) FROM orders")
+
+	_, diags := typeCheckSQL(t, cat, script)
+	if len(diags) != 1 {
+		t.Fatalf("len(diagnostics) = %d, want 1", len(diags))
+	}
+	if diags[0].SQLState != sqlStateDatatypeMismatch {
+		t.Fatalf("diagnostic SQLSTATE = %q, want %q", diags[0].SQLState, sqlStateDatatypeMismatch)
+	}
+	if diags[0].Message != "IN subquery returned 2 columns" {
+		t.Fatalf("diagnostic message = %q", diags[0].Message)
+	}
+}
+
+func TestTypeCheckerReportsInSubqueryTypeMismatch(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT active IN (SELECT total FROM orders) FROM orders")
+
+	_, diags := typeCheckSQL(t, cat, script)
+	if len(diags) != 1 {
+		t.Fatalf("len(diagnostics) = %d, want 1", len(diags))
+	}
+	if diags[0].SQLState != sqlStateDatatypeMismatch {
+		t.Fatalf("diagnostic SQLSTATE = %q, want %q", diags[0].SQLState, sqlStateDatatypeMismatch)
+	}
+	if diags[0].Message != "IN subquery result of type INTEGER is incompatible with left-hand type BOOLEAN" {
 		t.Fatalf("diagnostic message = %q", diags[0].Message)
 	}
 }
