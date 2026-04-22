@@ -10,6 +10,7 @@
 .gocache
 
 .bin
+bin/golangci-lint
 
 # Test binary, built with `go test -c`
 *.test

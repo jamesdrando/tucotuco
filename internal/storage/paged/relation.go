@@ -346,6 +346,10 @@ func (r *Relation) Insert(row storage.Row) (storage.RowHandle, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	return r.insertLocked(row)
+}
+
+func (r *Relation) insertLocked(row storage.Row) (storage.RowHandle, error) {
 	if r.closed {
 		return storage.RowHandle{}, ErrClosed
 	}
@@ -376,6 +380,10 @@ func (r *Relation) Update(handle storage.RowHandle, row storage.Row) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	return r.updateLocked(handle, row)
+}
+
+func (r *Relation) updateLocked(handle storage.RowHandle, row storage.Row) error {
 	if r.closed {
 		return ErrClosed
 	}
@@ -450,7 +458,7 @@ func (r *Relation) Update(handle storage.RowHandle, row storage.Row) error {
 		}
 
 		if err := r.mutateAndFinalizeHeapPage(currentPage, func(heap *heapPage) error {
-			return heap.markTerminal(currentHandle.Slot, version)
+			return heap.endTupleVersion(currentHandle.Slot, version, newHandle)
 		}); err != nil {
 			r.releasePinnedHeapPage(currentPage)
 			r.releasePinnedHeapPage(rootPage)
@@ -469,12 +477,17 @@ func (r *Relation) Update(handle storage.RowHandle, row storage.Row) error {
 	return nil
 }
 
-// Delete marks the addressed row dead. Redirect roots and their current target
-// both become non-visible so the original handle fails cleanly.
+// Delete marks the addressed row dead. Redirect roots stay as one-hop routing
+// slots while the current tuple version becomes terminal, so lookups through
+// the original handle still resolve cleanly to "not found".
 func (r *Relation) Delete(handle storage.RowHandle) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	return r.deleteLocked(handle)
+}
+
+func (r *Relation) deleteLocked(handle storage.RowHandle) error {
 	if r.closed {
 		return ErrClosed
 	}
@@ -500,14 +513,6 @@ func (r *Relation) Delete(handle storage.RowHandle) error {
 		return err
 	}
 
-	if location.redirected() {
-		if err := r.mutateAndFinalizeHeapPage(location.rootPage, func(heap *heapPage) error {
-			return heap.markDead(location.rootHandle.Slot)
-		}); err != nil {
-			return err
-		}
-	}
-
 	r.releaseResolvedRow(location)
 	location = nil
 	if err := r.writeMetadata(metadata); err != nil {
@@ -522,6 +527,10 @@ func (r *Relation) Lookup(handle storage.RowHandle) (storage.Row, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	return r.lookupLocked(handle)
+}
+
+func (r *Relation) lookupLocked(handle storage.RowHandle) (storage.Row, error) {
 	if r.closed {
 		return storage.Row{}, ErrClosed
 	}
@@ -771,6 +780,9 @@ func (r *Relation) scanNextVersionFloor() (uint64, error) {
 				return 0, err
 			}
 			if slot.Flags != slotFlagLive && slot.Flags != slotFlagDead {
+				continue
+			}
+			if slot.Flags == slotFlagDead && slot.Length < tupleHeaderSize {
 				continue
 			}
 

@@ -18,46 +18,48 @@
 
 ## JUST DONE
 
-Completed `TASKS.md` T-125 by activating MVCC row-version metadata in the existing paged tuple layout without introducing a second on-disk row format.
+Completed `TASKS.md` T-126 by finishing the relation-scoped paged transaction layer and fixing the remaining T-125 redirect/version regressions.
 
-- Added a persisted relation-local `NextVersion` counter on metadata page `0` with v1-read / v2-write compatibility so one logical row mutation reuses one stable version stamp across tuple changes.
-- Activated tuple-header `xmin` / `xmax` semantics in `internal/storage/paged`:
-  - inserts stamp non-zero `xmin`
-  - updates create replacement tuples, archive superseded root versions before redirect overwrite, and stamp ended versions with `xmax` plus a packed `forward_ptr`
-  - deletes mark the current tuple version terminal via `xmax` / deleted-flag metadata instead of relying on immediate slot death
-- Kept the current page/slot handle model intact by preserving root-slot redirects for original-handle lookup while leaving ended tuple versions physically inspectable for later vacuum work.
-- Extended paged-storage coverage in:
-  - `internal/storage/paged/relation_test.go`
-  - `internal/storage/paged/relation_mutation_test.go`
-  - `internal/storage/paged/relation_version_recovery_test.go`
-- Verified WAL/recovery compatibility by keeping the version counter on page `0` under the existing page-image WAL + redo path.
-- Verified focused validation with writable Go caches:
-  - `env GOCACHE=/tmp/tucotuco-go-test-focused go test ./internal/wal ./internal/storage/paged`
-- Verified repo-wide regression/build coverage:
+- Kept the current committed `Relation.Insert` / `Update` / `Delete` / `Lookup` paths intact for non-transaction callers while exposing relation-local begin/commit/rollback in `internal/storage/paged/transaction.go`.
+- Preserved transaction-local visibility over committed rows plus staged writes:
+  - read-only transactions reject insert/update/delete
+  - transactions see their own inserts, updates, and deletes through both `Lookup` and `Scan`
+  - rollback discards staged writes without touching relation state or WAL
+- Fixed the paged versioning regressions called out by focused validation:
+  - redirect-target rewrites now end superseded replacement versions with `xmax` plus `forward_ptr`
+  - deleted redirect roots stay one-hop redirect slots, and version-floor scanning skips short dead payloads so reopen does not decode 16-byte redirect tombstones as tuple headers
+- Added T-126 coverage in `internal/storage/paged/transaction_test.go` for insert/update/delete rollback, read-only rejection, own-write visibility, and reopen durability for committed vs rolled-back transactions.
+- Revalidated the paged storage and WAL packages:
+  - `env GOCACHE=/tmp/tucotuco-go-test-focused go test ./internal/storage/paged ./internal/wal`
+- Revalidated repo-wide regression/build coverage:
   - `env GOCACHE=/tmp/tucotuco-go-test-all go test ./...`
   - `env GOCACHE=/tmp/tucotuco-go-build-all go build ./...`
-- Confirmed formatting is clean with `git diff --check`.
+- Confirmed formatting and whitespace hygiene:
+  - `gofmt -w internal/storage/paged/relation.go internal/storage/paged/scan.go internal/storage/paged/transaction.go internal/storage/paged/transaction_test.go`
+  - `git diff --check`
 - Lint remains environment-blocked in this checkout: `golangci-lint` is not present on `PATH`.
-- Marked `TASKS.md` T-125 complete after focused and repo-wide validation passed.
+- Marked `TASKS.md` T-126 complete after focused and repo-wide validation passed.
 
 ---
 
 ## NEXT
 
-**Task(s) to execute:** T-126
+**Task(s) to execute:** T-127
 
 **Instructions for the incoming agent:**
 
 1. Read `AGENTS.md` and `INDEX.md` again before starting the next storage task.
-2. Start **T-126** by building transaction begin/commit/rollback semantics on top of the `T-125` relation-local version stamps instead of replacing the tuple-version layout again.
-3. Reuse the current tuple `xmin` / `xmax` fields and metadata-page `NextVersion` counter as the storage-local version backbone while introducing transaction visibility rules.
-4. Preserve compatibility with the `T-124` recovery path and the current root-redirect + historical-version model in `internal/storage/paged/`.
-5. Extend storage tests with transaction visibility, rollback, and read-only behavior before moving on to `T-127` vacuum or `T-128` storage-test migration.
+2. Start **T-127** by reclaiming dead tuple space from the current `T-125` / `T-126` version layout instead of introducing a second heap format.
+3. Treat redirected roots plus ended tuple versions as the vacuum input model:
+  - live redirect roots remain logical entry points
+  - replacement and deleted tuple headers carry the version-chain metadata that vacuum must respect
+4. Preserve compatibility with the current WAL/recovery path and the relation-local `NextVersion` counter on metadata page `0`.
+5. Keep `T-128` in mind while extending paged tests so vacuum changes do not make the committed and transaction-local scan behavior drift.
 6. Lint remains environment-blocked unless a `golangci-lint` entrypoint is restored in this checkout.
 
 **Spec references:** `SPEC.md` §7, §9, `docs/storage.md` §5, §7, §9
 
-**Estimated parallelism available:** 1 stream (`T-126` is serial)
+**Estimated parallelism available:** 1 stream (`T-127` is the first unblocked task)
 
 ---
 
@@ -73,7 +75,7 @@ _None._
 |-----------|--------|----------------|
 | M0 — Repo Ready | ✅ Complete | None |
 | M1 — SQL-92 Core | ✅ Complete | None (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-060`, `T-061`, `T-062`, `T-063`, `T-070`, `T-071`, `T-072`, `T-073`, `T-080`, `T-081`, `T-082`, `T-090`, `T-091`, `T-092`, `T-093`, `T-094`, `T-095`, `T-096`, `T-097`, `T-098`, `T-099`, `T-100`, `T-101`, `T-102`, `T-110`, `T-111`, `T-112`, `T-113` complete) |
-| M2 — SQL-92 Full + Storage | 🟨 In progress | T-126 to T-171 (`T-120`, `T-121`, `T-122`, `T-123`, `T-124`, `T-125` complete) |
+| M2 — SQL-92 Full + Storage | 🟨 In progress | T-127 to T-171 (`T-120`, `T-121`, `T-122`, `T-123`, `T-124`, `T-125`, `T-126` complete) |
 | M3 — SQL:1999 | 🔲 Not started | T-200 to T-261 |
 | M4 — SQL:2003 + Wire | 🔲 Not started | T-300 to T-312 |
 | M5 — SQL:2008 | 🔲 Not started | T-350 to T-356 |
@@ -119,3 +121,4 @@ _None._
 | #029 | 2026-04-21 | Codex | Completed T-123 | Added the first file-backed WAL layer in `internal/wal` plus paged-storage WAL emission, page-LSN stamping, WAL-before-page-flush ordering, focused WAL/paged tests, and repo-wide green validation, then advanced the baton to `T-124` |
 | #030 | 2026-04-21 | Codex | Completed T-124 | Parallelized `T-124` with six bounded subagents, added restart-time WAL redo before paged-storage validation, extended WAL scan helpers plus recovery tests, passed focused and repo-wide tests/build, and advanced the baton to `T-125` |
 | #031 | 2026-04-21 | Codex | Completed T-125 | Parallelized `T-125` with bounded subagents, activated relation-local tuple version metadata (`xmin` / `xmax`), persisted page-0 version allocation, added version-aware paged-storage + recovery tests, passed focused and repo-wide tests/build, and advanced the baton to `T-126` |
+| #032 | 2026-04-21 | Codex | Completed T-126 | Finished relation-local begin/commit/rollback in `internal/storage/paged`, fixed redirect/version-floor reopen regressions, added transaction visibility/rollback durability tests, passed focused and repo-wide tests/build, and advanced the baton to `T-127` |

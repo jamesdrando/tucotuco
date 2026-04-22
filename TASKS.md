@@ -225,7 +225,7 @@
 
 - [x] **T-125** — MVCC row versioning (xmin/xmax per tuple) `[serial]` `depends: T-122,T-124`
 
-- [ ] **T-126** — Transaction manager: begin/commit/rollback with MVCC `[serial]` `depends: T-125`
+- [x] **T-126** — Transaction manager: begin/commit/rollback with MVCC `[serial]` `depends: T-125`
 
 - [ ] **T-127** — Vacuum / dead tuple reclamation `[parallel-safe]` `depends: T-126`
 
