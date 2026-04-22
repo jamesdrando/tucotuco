@@ -1,0 +1,146 @@
+fixture: 068_set_operations
+
+statement 1:
+  sql:
+    CREATE TABLE left_ids (id INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    CREATE TABLE right_ids (id INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 3:
+  sql:
+    INSERT INTO left_ids VALUES (1)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    INSERT INTO left_ids VALUES (1)
+  result:
+    ok
+    rows_affected: 1
+
+statement 5:
+  sql:
+    INSERT INTO left_ids VALUES (2)
+  result:
+    ok
+    rows_affected: 1
+
+statement 6:
+  sql:
+    INSERT INTO left_ids VALUES (3)
+  result:
+    ok
+    rows_affected: 1
+
+statement 7:
+  sql:
+    INSERT INTO right_ids VALUES (1)
+  result:
+    ok
+    rows_affected: 1
+
+statement 8:
+  sql:
+    INSERT INTO right_ids VALUES (1)
+  result:
+    ok
+    rows_affected: 1
+
+statement 9:
+  sql:
+    INSERT INTO right_ids VALUES (3)
+  result:
+    ok
+    rows_affected: 1
+
+statement 10:
+  sql:
+    INSERT INTO right_ids VALUES (4)
+  result:
+    ok
+    rows_affected: 1
+
+statement 11:
+  sql:
+    SELECT id FROM left_ids UNION SELECT id FROM right_ids
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      [0] 1
+      [1] 2
+      [2] 3
+      [3] 4
+
+statement 12:
+  sql:
+    SELECT id FROM left_ids UNION ALL SELECT id FROM right_ids
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      [0] 1
+      [1] 1
+      [2] 2
+      [3] 3
+      [4] 1
+      [5] 1
+      [6] 3
+      [7] 4
+
+statement 13:
+  sql:
+    SELECT id FROM left_ids UNION SELECT id FROM right_ids INTERSECT SELECT id FROM left_ids
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      [0] 1
+      [1] 2
+      [2] 3
+
+statement 14:
+  sql:
+    SELECT id FROM left_ids INTERSECT ALL SELECT id FROM right_ids
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      [0] 1
+      [1] 1
+      [2] 3
+
+statement 15:
+  sql:
+    SELECT id FROM left_ids EXCEPT SELECT id FROM right_ids
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      [0] 2
+
+statement 16:
+  sql:
+    SELECT id FROM (SELECT id FROM left_ids EXCEPT SELECT id FROM right_ids) AS q UNION SELECT 4
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+    rows:
+      [0] 2
+      [1] 4

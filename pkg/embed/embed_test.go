@@ -342,6 +342,68 @@ func TestQueryRejectsMultiRowScalarSubquery(t *testing.T) {
 	}
 }
 
+func TestQueryExecutesSetOperationsEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	db := mustOpenDB(t, filepath.Join(t.TempDir(), "catalog.json"))
+	for _, sql := range []string{
+		"CREATE TABLE left_ids (id INTEGER NOT NULL)",
+		"CREATE TABLE right_ids (id INTEGER NOT NULL)",
+		"INSERT INTO left_ids VALUES (1)",
+		"INSERT INTO left_ids VALUES (1)",
+		"INSERT INTO left_ids VALUES (2)",
+		"INSERT INTO left_ids VALUES (3)",
+		"INSERT INTO right_ids VALUES (1)",
+		"INSERT INTO right_ids VALUES (1)",
+		"INSERT INTO right_ids VALUES (3)",
+		"INSERT INTO right_ids VALUES (4)",
+	} {
+		if _, err := db.Exec(sql); err != nil {
+			t.Fatalf("Exec(%q) error = %v", sql, err)
+		}
+	}
+
+	unionDistinct, err := db.Query("SELECT id FROM left_ids UNION SELECT id FROM right_ids")
+	if err != nil {
+		t.Fatalf("Query(UNION) error = %v", err)
+	}
+	if got, want := unionDistinct.Rows, [][]any{{int32(1)}, {int32(2)}, {int32(3)}, {int32(4)}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unionDistinct.Rows = %#v, want %#v", got, want)
+	}
+
+	unionAll, err := db.Query("SELECT id FROM left_ids UNION ALL SELECT id FROM right_ids")
+	if err != nil {
+		t.Fatalf("Query(UNION ALL) error = %v", err)
+	}
+	if got, want := unionAll.Rows, [][]any{{int32(1)}, {int32(1)}, {int32(2)}, {int32(3)}, {int32(1)}, {int32(1)}, {int32(3)}, {int32(4)}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unionAll.Rows = %#v, want %#v", got, want)
+	}
+
+	intersectPrecedence, err := db.Query("SELECT id FROM left_ids UNION SELECT id FROM right_ids INTERSECT SELECT id FROM left_ids")
+	if err != nil {
+		t.Fatalf("Query(INTERSECT precedence) error = %v", err)
+	}
+	if got, want := intersectPrecedence.Rows, [][]any{{int32(1)}, {int32(2)}, {int32(3)}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("intersectPrecedence.Rows = %#v, want %#v", got, want)
+	}
+
+	exceptAll, err := db.Query("SELECT id FROM left_ids EXCEPT ALL SELECT id FROM right_ids")
+	if err != nil {
+		t.Fatalf("Query(EXCEPT ALL) error = %v", err)
+	}
+	if got, want := exceptAll.Rows, [][]any{{int32(2)}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("exceptAll.Rows = %#v, want %#v", got, want)
+	}
+
+	parenthesized, err := db.Query("SELECT id FROM (SELECT id FROM left_ids EXCEPT SELECT id FROM right_ids) AS q UNION SELECT 4")
+	if err != nil {
+		t.Fatalf("Query(parenthesized set op) error = %v", err)
+	}
+	if got, want := parenthesized.Rows, [][]any{{int32(2)}, {int32(4)}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("parenthesized.Rows = %#v, want %#v", got, want)
+	}
+}
+
 func TestQueryRejectsUnsupportedShapes(t *testing.T) {
 	t.Parallel()
 

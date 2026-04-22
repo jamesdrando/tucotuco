@@ -56,6 +56,27 @@ func TestTypeCheckerAssignsDerivedTableTypes(t *testing.T) {
 	}
 }
 
+func TestTypeCheckerAssignsSetOpTypes(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT id FROM orders UNION SELECT customer_id FROM orders")
+
+	typed, diags := typeCheckSQL(t, cat, script)
+	if len(diags) != 0 {
+		t.Fatalf("CheckScript() diagnostics = %#v, want none", diags)
+	}
+
+	query, ok := script.Nodes[0].(parser.QueryExpr)
+	if !ok {
+		t.Fatalf("script.Nodes[0] = %T, want parser.QueryExpr", script.Nodes[0])
+	}
+	wantOutputs := []sqltypes.TypeDesc{mustAnalyzerTypeDesc(t, "INTEGER")}
+	if got, ok := typed.QueryOutputs(query); !ok || !equalTypeSlices(got, wantOutputs) {
+		t.Fatalf("QueryOutputs(query) = (%#v, %t), want %#v", got, ok, wantOutputs)
+	}
+}
+
 func TestTypeCheckerAssignsSubqueryExpressionTypes(t *testing.T) {
 	t.Parallel()
 
@@ -240,6 +261,42 @@ func TestTypeCheckerReportsInSubqueryTypeMismatch(t *testing.T) {
 		t.Fatalf("diagnostic SQLSTATE = %q, want %q", diags[0].SQLState, sqlStateDatatypeMismatch)
 	}
 	if diags[0].Message != "IN subquery result of type INTEGER is incompatible with left-hand type BOOLEAN" {
+		t.Fatalf("diagnostic message = %q", diags[0].Message)
+	}
+}
+
+func TestTypeCheckerReportsSetOpColumnCountMismatch(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT id FROM orders UNION SELECT id, total FROM orders")
+
+	_, diags := typeCheckSQL(t, cat, script)
+	if len(diags) != 1 {
+		t.Fatalf("len(diagnostics) = %d, want 1", len(diags))
+	}
+	if diags[0].SQLState != sqlStateDatatypeMismatch {
+		t.Fatalf("diagnostic SQLSTATE = %q, want %q", diags[0].SQLState, sqlStateDatatypeMismatch)
+	}
+	if diags[0].Message != "UNION queries return 1 and 2 columns" {
+		t.Fatalf("diagnostic message = %q", diags[0].Message)
+	}
+}
+
+func TestTypeCheckerReportsSetOpTypeMismatch(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "SELECT id FROM orders UNION SELECT active FROM orders")
+
+	_, diags := typeCheckSQL(t, cat, script)
+	if len(diags) != 1 {
+		t.Fatalf("len(diagnostics) = %d, want 1", len(diags))
+	}
+	if diags[0].SQLState != sqlStateDatatypeMismatch {
+		t.Fatalf("diagnostic SQLSTATE = %q, want %q", diags[0].SQLState, sqlStateDatatypeMismatch)
+	}
+	if diags[0].Message != "UNION column 1 types INTEGER NOT NULL and BOOLEAN are incompatible" {
 		t.Fatalf("diagnostic message = %q", diags[0].Message)
 	}
 }

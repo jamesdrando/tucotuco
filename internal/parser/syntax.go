@@ -15,6 +15,12 @@ type SyntaxNode interface {
 // Node is a backwards-compatible alias for the parser-local CST contract.
 type Node = SyntaxNode
 
+// QueryExpr marks parser nodes that produce a query result set.
+type QueryExpr interface {
+	Node
+	queryExpr()
+}
+
 // Script is the CST root for a parsed SQL input.
 type Script struct {
 	token.Span
@@ -149,14 +155,14 @@ type BetweenExpr struct {
 type SubqueryExpr struct {
 	token.Span
 
-	Query *SelectStmt
+	Query QueryExpr
 }
 
 // ExistsExpr captures an EXISTS predicate.
 type ExistsExpr struct {
 	token.Span
 
-	Query *SelectStmt
+	Query QueryExpr
 }
 
 // InExpr captures an IN predicate with an expression list.
@@ -165,7 +171,7 @@ type InExpr struct {
 
 	Expr    Node
 	List    []Node
-	Query   *SelectStmt
+	Query   QueryExpr
 	Negated bool
 }
 
@@ -210,6 +216,21 @@ type SelectStmt struct {
 	Having        Node
 	OrderBy       []*OrderByItem
 }
+
+func (*SelectStmt) queryExpr() {}
+
+// SetOpExpr captures a query expression that combines two query inputs with a
+// SQL set operator.
+type SetOpExpr struct {
+	token.Span
+
+	Left          QueryExpr
+	Right         QueryExpr
+	Operator      string
+	SetQuantifier string
+}
+
+func (*SetOpExpr) queryExpr() {}
 
 // SelectItem captures one SELECT-list expression with an optional alias.
 type SelectItem struct {

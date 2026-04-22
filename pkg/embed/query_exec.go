@@ -14,12 +14,12 @@ func (s *session) query(sql string) (*ResultSet, error) {
 		return nil, err
 	}
 
-	stmt, ok := node.(*parser.SelectStmt)
+	query, ok := node.(parser.QueryExpr)
 	if !ok {
-		return nil, featureError(node, "Query only supports SELECT statements")
+		return nil, featureError(node, "Query only supports SELECT query expressions")
 	}
 
-	operator, columns, err := buildSelectOperator(stmt, ctx.bindings, ctx.types, s.store, s.tx)
+	operator, columns, err := buildQueryOperator(query, ctx.bindings, ctx.types, s.store, s.tx)
 	if err != nil {
 		return nil, err
 	}

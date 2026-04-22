@@ -364,7 +364,44 @@ func TestBuilderRejectsNaturalJoinPlanning(t *testing.T) {
 	}
 }
 
-func analyzeSelect(t *testing.T, cat catalog.Catalog, sql string) (*parser.SelectStmt, *analyzer.Bindings, *analyzer.Types) {
+func TestBuilderBuildsSetOperationPlan(t *testing.T) {
+	t.Parallel()
+
+	query, bindings, types := analyzeQuery(t, plannerTestCatalog(t), "SELECT id FROM orders UNION ALL SELECT customer_id FROM customers")
+
+	plan, diags := NewBuilder(bindings, types).Build(query)
+	if len(diags) != 0 {
+		t.Fatalf("Build() diagnostics = %#v, want none", diags)
+	}
+
+	setOp, ok := plan.(*SetOp)
+	if !ok {
+		t.Fatalf("plan = %T, want *SetOp", plan)
+	}
+	if got, want := setOp.String(), "SetOp(operator=UNION, quantifier=ALL)"; got != want {
+		t.Fatalf("setOp.String() = %q, want %q", got, want)
+	}
+	if got, want := stripPlannerColumns(setOp.Columns()), []Column{{Name: "id", Type: mustTypeDesc(t, "INTEGER NOT NULL")}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("setOp.Columns() = %#v, want %#v", got, want)
+	}
+
+	left, ok := setOp.Left.(*Project)
+	if !ok {
+		t.Fatalf("setOp.Left = %T, want *Project", setOp.Left)
+	}
+	right, ok := setOp.Right.(*Project)
+	if !ok {
+		t.Fatalf("setOp.Right = %T, want *Project", setOp.Right)
+	}
+	if got, want := left.String(), "Project(columns=[id INTEGER NOT NULL])"; got != want {
+		t.Fatalf("left.String() = %q, want %q", got, want)
+	}
+	if got, want := right.String(), "Project(columns=[customer_id INTEGER])"; got != want {
+		t.Fatalf("right.String() = %q, want %q", got, want)
+	}
+}
+
+func analyzeQuery(t *testing.T, cat catalog.Catalog, sql string) (parser.QueryExpr, *analyzer.Bindings, *analyzer.Types) {
 	t.Helper()
 
 	p := parser.New(lexer.NewString(sql).All())
@@ -376,9 +413,9 @@ func analyzeSelect(t *testing.T, cat catalog.Catalog, sql string) (*parser.Selec
 		t.Fatalf("len(script.Nodes) = %d, want 1", len(script.Nodes))
 	}
 
-	stmt, ok := script.Nodes[0].(*parser.SelectStmt)
+	query, ok := script.Nodes[0].(parser.QueryExpr)
 	if !ok {
-		t.Fatalf("script.Nodes[0] = %T, want *parser.SelectStmt", script.Nodes[0])
+		t.Fatalf("script.Nodes[0] = %T, want parser.QueryExpr", script.Nodes[0])
 	}
 
 	bindings, resolveDiags := analyzer.NewResolver(cat).ResolveScript(script)
@@ -389,6 +426,18 @@ func analyzeSelect(t *testing.T, cat catalog.Catalog, sql string) (*parser.Selec
 	types, typeDiags := analyzer.NewTypeChecker(bindings).CheckScript(script)
 	if len(typeDiags) != 0 {
 		t.Fatalf("CheckScript() diagnostics = %#v, want none", typeDiags)
+	}
+
+	return query, bindings, types
+}
+
+func analyzeSelect(t *testing.T, cat catalog.Catalog, sql string) (*parser.SelectStmt, *analyzer.Bindings, *analyzer.Types) {
+	t.Helper()
+
+	query, bindings, types := analyzeQuery(t, cat, sql)
+	stmt, ok := query.(*parser.SelectStmt)
+	if !ok {
+		t.Fatalf("query = %T, want *parser.SelectStmt", query)
 	}
 
 	return stmt, bindings, types

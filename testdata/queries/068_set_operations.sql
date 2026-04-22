@@ -1,0 +1,16 @@
+CREATE TABLE left_ids (id INTEGER NOT NULL);
+CREATE TABLE right_ids (id INTEGER NOT NULL);
+INSERT INTO left_ids VALUES (1);
+INSERT INTO left_ids VALUES (1);
+INSERT INTO left_ids VALUES (2);
+INSERT INTO left_ids VALUES (3);
+INSERT INTO right_ids VALUES (1);
+INSERT INTO right_ids VALUES (1);
+INSERT INTO right_ids VALUES (3);
+INSERT INTO right_ids VALUES (4);
+SELECT id FROM left_ids UNION SELECT id FROM right_ids;
+SELECT id FROM left_ids UNION ALL SELECT id FROM right_ids;
+SELECT id FROM left_ids UNION SELECT id FROM right_ids INTERSECT SELECT id FROM left_ids;
+SELECT id FROM left_ids INTERSECT ALL SELECT id FROM right_ids;
+SELECT id FROM left_ids EXCEPT SELECT id FROM right_ids;
+SELECT id FROM (SELECT id FROM left_ids EXCEPT SELECT id FROM right_ids) AS q UNION SELECT 4;

@@ -46,8 +46,8 @@ func (p *typeCheckPass) checkScript(script *parser.Script) {
 
 func (p *typeCheckPass) checkStatement(node parser.Node) {
 	switch node := node.(type) {
-	case *parser.SelectStmt:
-		p.checkSelect(node)
+	case parser.QueryExpr:
+		p.checkQuery(node)
 	case *parser.InsertStmt:
 		p.checkInsert(node)
 	case *parser.UpdateStmt:
@@ -59,16 +59,29 @@ func (p *typeCheckPass) checkStatement(node parser.Node) {
 	}
 }
 
+func (p *typeCheckPass) checkQuery(query parser.QueryExpr) []sqtypes.TypeDesc {
+	switch query := query.(type) {
+	case nil:
+		return nil
+	case *parser.SelectStmt:
+		return p.checkSelect(query)
+	case *parser.SetOpExpr:
+		return p.checkSetOp(query)
+	default:
+		return nil
+	}
+}
+
 func (p *typeCheckPass) checkSelect(stmt *parser.SelectStmt) []sqtypes.TypeDesc {
 	if stmt == nil {
 		return nil
 	}
-	if outputs, ok := p.types.SelectOutputs(stmt); ok {
+	if outputs, ok := p.types.QueryOutputs(stmt); ok {
 		return outputs
 	}
 
 	// Install a placeholder so derived-table recursion can terminate cleanly.
-	p.types.bindSelect(stmt, nil)
+	p.types.bindQuery(stmt, nil)
 
 	for _, source := range stmt.From {
 		p.checkFromNode(source)
@@ -98,7 +111,53 @@ func (p *typeCheckPass) checkSelect(stmt *parser.SelectStmt) []sqtypes.TypeDesc 
 		p.exprType(item.Expr)
 	}
 
-	p.types.bindSelect(stmt, outputs)
+	p.types.bindQuery(stmt, outputs)
+	return outputs
+}
+
+func (p *typeCheckPass) checkSetOp(expr *parser.SetOpExpr) []sqtypes.TypeDesc {
+	if expr == nil {
+		return nil
+	}
+	if outputs, ok := p.types.QueryOutputs(expr); ok {
+		return outputs
+	}
+
+	p.types.bindQuery(expr, nil)
+
+	left := p.checkQuery(expr.Left)
+	right := p.checkQuery(expr.Right)
+	if len(left) != len(right) {
+		p.addError(
+			sqlStateDatatypeMismatch,
+			expr.Pos(),
+			"%s queries return %d and %d columns",
+			expr.Operator,
+			len(left),
+			len(right),
+		)
+		return nil
+	}
+
+	outputs := make([]sqtypes.TypeDesc, len(left))
+	for index := range left {
+		common, ok := sqtypes.CommonSuperType(left[index], right[index])
+		if !ok {
+			p.addError(
+				sqlStateDatatypeMismatch,
+				expr.Pos(),
+				"%s column %d types %s and %s are incompatible",
+				expr.Operator,
+				index+1,
+				typeString(left[index]),
+				typeString(right[index]),
+			)
+			continue
+		}
+		outputs[index] = common
+	}
+
+	p.types.bindQuery(expr, outputs)
 	return outputs
 }
 
@@ -150,8 +209,8 @@ func (p *typeCheckPass) checkFromSource(source *parser.FromSource) {
 	}
 
 	switch inner := source.Source.(type) {
-	case *parser.SelectStmt:
-		p.checkSelect(inner)
+	case parser.QueryExpr:
+		p.checkQuery(inner)
 	case *parser.JoinExpr:
 		p.checkJoin(inner)
 	}
@@ -188,13 +247,13 @@ func (p *typeCheckPass) checkInsert(stmt *parser.InsertStmt) {
 			p.checkAssignmentList(targets, row, rowTypes, "INSERT value")
 		}
 	case *parser.InsertQuerySource:
-		query, ok := source.Query.(*parser.SelectStmt)
+		query, ok := source.Query.(parser.QueryExpr)
 		if !ok {
 			return
 		}
-		outputs := p.checkSelect(query)
+		outputs := p.checkQuery(query)
 		p.checkInsertQueryShape(source.Pos(), len(targets), len(outputs))
-		p.checkAssignmentList(targets, selectOutputNodes(p.bindings(), query), outputs, "INSERT value")
+		p.checkAssignmentList(targets, queryOutputNodes(p.bindings(), query), outputs, "INSERT value")
 	case *parser.InsertDefaultValuesSource:
 		p.checkInsertDefaultValues(stmt)
 	}
@@ -340,7 +399,7 @@ func (p *typeCheckPass) exprType(node parser.Node) sqtypes.TypeDesc {
 		desc = p.scalarSubqueryType(node, node.Query)
 	case *parser.ExistsExpr:
 		if node.Query != nil {
-			p.checkSelect(node.Query)
+			p.checkQuery(node.Query)
 		}
 		desc = booleanType(false)
 	case *parser.InExpr:
@@ -354,7 +413,7 @@ func (p *typeCheckPass) exprType(node parser.Node) sqtypes.TypeDesc {
 		if len(types) == 1 {
 			desc = types[0]
 		}
-	case *parser.SelectStmt:
+	case parser.QueryExpr:
 		desc = p.scalarSubqueryType(node, node)
 	}
 
@@ -362,12 +421,12 @@ func (p *typeCheckPass) exprType(node parser.Node) sqtypes.TypeDesc {
 	return desc
 }
 
-func (p *typeCheckPass) scalarSubqueryType(node parser.Node, query *parser.SelectStmt) sqtypes.TypeDesc {
+func (p *typeCheckPass) scalarSubqueryType(node parser.Node, query parser.QueryExpr) sqtypes.TypeDesc {
 	if query == nil {
 		return sqtypes.TypeDesc{}
 	}
 
-	outputs := p.checkSelect(query)
+	outputs := p.checkQuery(query)
 	switch len(outputs) {
 	case 0:
 		return sqtypes.TypeDesc{}
@@ -616,7 +675,7 @@ func (p *typeCheckPass) inExprType(node *parser.InExpr) sqtypes.TypeDesc {
 	leftType := p.exprType(node.Expr)
 	nullable := isNullableResult(leftType)
 	if node.Query != nil {
-		outputs := p.checkSelect(node.Query)
+		outputs := p.checkQuery(node.Query)
 		switch len(outputs) {
 		case 0:
 			return booleanType(nullable)
@@ -1334,39 +1393,44 @@ func applyColumnNullability(desc sqtypes.TypeDesc, column *parser.ColumnDef) sqt
 	return desc
 }
 
-func selectOutputNodes(bindings *Bindings, stmt *parser.SelectStmt) []parser.Node {
-	if stmt == nil {
+func queryOutputNodes(bindings *Bindings, query parser.QueryExpr) []parser.Node {
+	switch query := query.(type) {
+	case nil:
+		return nil
+	case *parser.SelectStmt:
+		nodes := make([]parser.Node, 0, len(query.SelectList))
+		for _, item := range query.SelectList {
+			if item == nil || item.Expr == nil {
+				continue
+			}
+
+			star, ok := item.Expr.(*parser.Star)
+			if !ok {
+				nodes = append(nodes, item.Expr)
+				continue
+			}
+
+			if bindings == nil {
+				nodes = append(nodes, star)
+				continue
+			}
+
+			columns, ok := bindings.Star(star)
+			if !ok || len(columns) == 0 {
+				nodes = append(nodes, star)
+				continue
+			}
+			for range columns {
+				nodes = append(nodes, star)
+			}
+		}
+
+		return nodes
+	case *parser.SetOpExpr:
+		return queryOutputNodes(bindings, query.Left)
+	default:
 		return nil
 	}
-
-	nodes := make([]parser.Node, 0, len(stmt.SelectList))
-	for _, item := range stmt.SelectList {
-		if item == nil || item.Expr == nil {
-			continue
-		}
-
-		star, ok := item.Expr.(*parser.Star)
-		if !ok {
-			nodes = append(nodes, item.Expr)
-			continue
-		}
-
-		if bindings == nil {
-			nodes = append(nodes, star)
-			continue
-		}
-
-		columns, ok := bindings.Star(star)
-		if !ok || len(columns) == 0 {
-			nodes = append(nodes, star)
-			continue
-		}
-		for range columns {
-			nodes = append(nodes, star)
-		}
-	}
-
-	return nodes
 }
 
 func safeIdentifierName(name *parser.Identifier) string {

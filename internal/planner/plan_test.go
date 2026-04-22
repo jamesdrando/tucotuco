@@ -179,6 +179,33 @@ func TestJoinReportsChildrenShapeAndFormatting(t *testing.T) {
 	}
 }
 
+func TestSetOpReportsChildrenShapeAndFormatting(t *testing.T) {
+	t.Parallel()
+
+	left := NewProject(
+		NewScan(storage.TableID{Schema: "public", Name: "orders"}, Column{Name: "id", Type: mustTypeDesc(t, "INTEGER NOT NULL")}),
+		Projection{Expr: &parser.Identifier{Name: "id"}, Output: Column{Name: "id", Type: mustTypeDesc(t, "INTEGER NOT NULL")}},
+	)
+	right := NewProject(
+		NewScan(storage.TableID{Schema: "public", Name: "customers"}, Column{Name: "customer_id", Type: mustTypeDesc(t, "INTEGER")}),
+		Projection{Expr: &parser.Identifier{Name: "customer_id"}, Output: Column{Name: "customer_id", Type: mustTypeDesc(t, "INTEGER")}},
+	)
+	setOp := NewSetOp(left, right, "UNION", "ALL", Column{Name: "id", Type: mustTypeDesc(t, "INTEGER NOT NULL")})
+
+	if setOp.Kind() != KindSetOp {
+		t.Fatalf("Kind() = %q, want %q", setOp.Kind(), KindSetOp)
+	}
+	if got, want := setOp.Children(), []Plan{left, right}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Children() = %#v, want %#v", got, want)
+	}
+	if got, want := setOp.Columns(), []Column{{Name: "id", Type: mustTypeDesc(t, "INTEGER NOT NULL")}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Columns() = %#v, want %#v", got, want)
+	}
+	if got, want := setOp.String(), "SetOp(operator=UNION, quantifier=ALL)"; got != want {
+		t.Fatalf("String() = %q, want %q", got, want)
+	}
+}
+
 func TestLimitInheritsInputShapeAndFormatting(t *testing.T) {
 	t.Parallel()
 

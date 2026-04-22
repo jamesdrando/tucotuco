@@ -199,7 +199,7 @@ func (p *Parser) parseStatement() (Node, bool) {
 	case tok.IsKeyword("ROLLBACK"):
 		return p.parseRollback(), true
 	case tok.IsKeyword("SELECT"):
-		return p.parseSelect(), true
+		return p.parseQueryExpression(), true
 	case tok.IsKeyword("INSERT"):
 		return p.parseInsert(), true
 	case tok.IsKeyword("UPDATE"):
@@ -370,6 +370,77 @@ func (p *Parser) parseSelect() *SelectStmt {
 	return stmt
 }
 
+func (p *Parser) parseQueryExpression() QueryExpr {
+	left := p.parseQueryTerm()
+	for p.matchKeyword("UNION") || p.matchKeyword("EXCEPT") {
+		operator := strings.ToUpper(p.consumeSignificant().Lexeme)
+		expr := &SetOpExpr{
+			Span: token.Span{
+				Start: nodePos(left),
+				Stop:  nodeEnd(left),
+			},
+			Left:     left,
+			Operator: operator,
+		}
+		if p.consumeKeyword("DISTINCT") {
+			expr.SetQuantifier = "DISTINCT"
+			expr.Stop = p.lastConsumed().End()
+		} else if p.consumeKeyword("ALL") {
+			expr.SetQuantifier = "ALL"
+			expr.Stop = p.lastConsumed().End()
+		}
+
+		expr.Right = p.parseQueryTerm()
+		expr.Stop = spanFromNode(expr.Right, expr.Stop)
+		left = expr
+	}
+
+	return left
+}
+
+func (p *Parser) parseQueryTerm() QueryExpr {
+	left := p.parseQueryPrimary()
+	for p.matchKeyword("INTERSECT") {
+		operator := strings.ToUpper(p.consumeSignificant().Lexeme)
+		expr := &SetOpExpr{
+			Span: token.Span{
+				Start: nodePos(left),
+				Stop:  nodeEnd(left),
+			},
+			Left:     left,
+			Operator: operator,
+		}
+		if p.consumeKeyword("DISTINCT") {
+			expr.SetQuantifier = "DISTINCT"
+			expr.Stop = p.lastConsumed().End()
+		} else if p.consumeKeyword("ALL") {
+			expr.SetQuantifier = "ALL"
+			expr.Stop = p.lastConsumed().End()
+		}
+
+		expr.Right = p.parseQueryPrimary()
+		expr.Stop = spanFromNode(expr.Right, expr.Stop)
+		left = expr
+	}
+
+	return left
+}
+
+func (p *Parser) parseQueryPrimary() QueryExpr {
+	if p.matchKeyword("SELECT") {
+		return p.parseSelect()
+	}
+	if p.consumePunctuation("(") {
+		query := p.parseQueryExpression()
+		p.expectPunctuation(")")
+		return query
+	}
+
+	tok := p.peekSignificant()
+	p.addError(tok, fmt.Sprintf("expected query expression, found %s", describeToken(tok)))
+	return nil
+}
+
 func (p *Parser) parseSelectItem() *SelectItem {
 	tok := p.peekSignificant()
 	if isSelectClauseBoundary(tok) {
@@ -471,7 +542,7 @@ func (p *Parser) parseFromPrimary() Node {
 
 		var source Node
 		if p.matchKeyword("SELECT") {
-			source = p.parseSelect()
+			source = p.parseQueryExpression()
 		} else {
 			source = p.parseFromSource()
 		}
@@ -639,7 +710,7 @@ func (p *Parser) parseInsert() *InsertStmt {
 			},
 		}
 	case p.matchKeyword("SELECT"):
-		query := p.parseSelect()
+		query := p.parseQueryExpression()
 		stmt.Source = &InsertQuerySource{
 			Span: token.Span{
 				Start: nodePos(query),
@@ -1227,7 +1298,7 @@ func (p *Parser) parsePrimary() Node {
 func (p *Parser) parseParenthesizedPrimary() Node {
 	open := p.consumeSignificant()
 	if p.matchKeyword("SELECT") {
-		query := p.parseSelect()
+		query := p.parseQueryExpression()
 		closeTok := p.expectPunctuation(")")
 		return &SubqueryExpr{
 			Span: token.Span{
@@ -1379,7 +1450,7 @@ func (p *Parser) parseCastExpr() Node {
 func (p *Parser) parseExistsExpr() Node {
 	existsTok := p.consumeSignificant()
 	p.expectPunctuation("(")
-	query := p.parseRequiredSelect("EXISTS")
+	query := p.parseRequiredQuery("EXISTS")
 	closeTok := p.expectPunctuation(")")
 
 	return &ExistsExpr{
@@ -1573,7 +1644,7 @@ func (p *Parser) finishInExpr(left Node, negated bool) Node {
 	p.expectPunctuation("(")
 
 	if p.matchKeyword("SELECT") {
-		query := p.parseSelect()
+		query := p.parseQueryExpression()
 		closeTok := p.expectPunctuation(")")
 
 		return &InExpr{
@@ -1712,13 +1783,13 @@ func (p *Parser) parseParenthesizedExpr(context string) (Node, token.Pos) {
 	return expr, spanEnd(closeTok, stop)
 }
 
-func (p *Parser) parseRequiredSelect(context string) *SelectStmt {
+func (p *Parser) parseRequiredQuery(context string) QueryExpr {
 	if p.matchKeyword("SELECT") {
-		return p.parseSelect()
+		return p.parseQueryExpression()
 	}
 
 	tok := p.peekSignificant()
-	p.addError(tok, fmt.Sprintf("expected SELECT in %s, found %s", context, describeToken(tok)))
+	p.addError(tok, fmt.Sprintf("expected query expression in %s, found %s", context, describeToken(tok)))
 	return nil
 }
 

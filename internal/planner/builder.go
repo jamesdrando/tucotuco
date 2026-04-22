@@ -51,10 +51,24 @@ func (p *buildPass) build(node parser.Node) Plan {
 	switch node := node.(type) {
 	case nil:
 		return nil
-	case *parser.SelectStmt:
-		return p.buildSelect(node)
+	case parser.QueryExpr:
+		return p.buildQuery(node)
 	default:
 		p.addFeatureError(node, "planner only supports SELECT statements in Phase 1")
+		return nil
+	}
+}
+
+func (p *buildPass) buildQuery(query parser.QueryExpr) Plan {
+	switch query := query.(type) {
+	case nil:
+		return nil
+	case *parser.SelectStmt:
+		return p.buildSelect(query)
+	case *parser.SetOpExpr:
+		return p.buildSetOp(query)
+	default:
+		p.addFeatureError(query, "planner only supports SELECT statements in Phase 1")
 		return nil
 	}
 }
@@ -95,6 +109,34 @@ func (p *buildPass) buildSelect(stmt *parser.SelectStmt) Plan {
 	}
 
 	return project
+}
+
+func (p *buildPass) buildSetOp(expr *parser.SetOpExpr) Plan {
+	if expr == nil {
+		return nil
+	}
+
+	left := p.buildQuery(expr.Left)
+	if left == nil || len(p.diagnostics) != 0 {
+		return nil
+	}
+	right := p.buildQuery(expr.Right)
+	if right == nil || len(p.diagnostics) != 0 {
+		return nil
+	}
+
+	outputs, ok := p.queryOutputs(expr)
+	if !ok {
+		return nil
+	}
+
+	columns := p.queryColumns(expr, outputs)
+	if len(columns) != len(outputs) {
+		p.addInternalError(expr, "planner output metadata does not match the set operation")
+		return nil
+	}
+
+	return NewSetOp(left, right, expr.Operator, expr.SetQuantifier, columns...)
 }
 
 func (p *buildPass) validateSelect(stmt *parser.SelectStmt) bool {
@@ -176,8 +218,8 @@ func (p *buildPass) buildFromSource(source *parser.FromSource) Plan {
 		}
 
 		return NewScan(relation.TableID, relationColumns(relation)...)
-	case *parser.SelectStmt:
-		return p.attachBoundRelation(p.buildSelect(inner), source)
+	case parser.QueryExpr:
+		return p.attachBoundRelation(p.buildQuery(inner), source)
 	case *parser.JoinExpr:
 		return p.attachBoundRelation(p.buildJoin(inner), source)
 	default:
@@ -284,20 +326,24 @@ func (p *buildPass) buildStar(star *parser.Star, input Plan) []Projection {
 	return projections
 }
 
-func (p *buildPass) selectOutputs(stmt *parser.SelectStmt) ([]sqltypes.TypeDesc, bool) {
+func (p *buildPass) queryOutputs(query parser.QueryExpr) ([]sqltypes.TypeDesc, bool) {
 	types := p.types()
 	if types == nil {
-		p.addInternalError(stmt, "planner requires analyzer type information")
+		p.addInternalError(query, "planner requires analyzer type information")
 		return nil, false
 	}
 
-	outputs, ok := types.SelectOutputs(stmt)
+	outputs, ok := types.QueryOutputs(query)
 	if !ok {
-		p.addInternalError(stmt, "planner is missing SELECT output metadata")
+		p.addInternalError(query, "planner is missing query output metadata")
 		return nil, false
 	}
 
 	return outputs, true
+}
+
+func (p *buildPass) selectOutputs(stmt *parser.SelectStmt) ([]sqltypes.TypeDesc, bool) {
+	return p.queryOutputs(stmt)
 }
 
 func (p *buildPass) nextOutputType(node parser.Node) (sqltypes.TypeDesc, bool) {
@@ -381,6 +427,28 @@ func relationColumns(relation *analyzer.RelationBinding) []Column {
 			RelationName: safeBindingRelation(binding),
 			Binding:      binding,
 		})
+	}
+
+	return columns
+}
+
+func relationColumnsWithTypes(relation *analyzer.RelationBinding, outputs []sqltypes.TypeDesc) []Column {
+	if relation == nil {
+		return nil
+	}
+
+	columns := make([]Column, 0, len(relation.Columns))
+	for index, binding := range relation.Columns {
+		column := Column{
+			Name:         safeBindingName(binding),
+			Type:         bindingType(binding),
+			RelationName: safeBindingRelation(binding),
+			Binding:      binding,
+		}
+		if column.Type.Kind == sqltypes.TypeKindInvalid && index < len(outputs) {
+			column.Type = outputs[index]
+		}
+		columns = append(columns, column)
 	}
 
 	return columns
@@ -530,9 +598,26 @@ func (p *buildPass) attachBoundRelation(plan Plan, source *parser.FromSource) Pl
 		for index, binding := range relation.Columns {
 			node.OutputColumns[index] = mergeBoundColumn(node.OutputColumns[index], binding)
 		}
+	case *SetOp:
+		if len(node.OutputColumns) != len(relation.Columns) {
+			p.addInternalError(source, "planner relation metadata does not match set-operation outputs")
+			return nil
+		}
+		for index, binding := range relation.Columns {
+			node.OutputColumns[index] = mergeBoundColumn(node.OutputColumns[index], binding)
+		}
 	}
 
 	return plan
+}
+
+func (p *buildPass) queryColumns(query parser.QueryExpr, outputs []sqltypes.TypeDesc) []Column {
+	relation, ok := p.boundRelation(query)
+	if !ok || relation == nil {
+		return nil
+	}
+
+	return relationColumnsWithTypes(relation, outputs)
 }
 
 func mergeBoundColumn(column Column, binding *analyzer.ColumnBinding) Column {

@@ -1,0 +1,91 @@
+fixture: 066_like_patterns
+
+statement 1:
+  sql:
+    SELECT 'abc' LIKE 'a%'
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 2:
+  sql:
+    SELECT 'abc' NOT LIKE 'a%'
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] false
+
+statement 3:
+  sql:
+    SELECT 'abc' NOT LIKE 'b%'
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 4:
+  sql:
+    SELECT 'a%b' LIKE 'a!%b' ESCAPE '!'
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 5:
+  sql:
+    SELECT 'a_b' LIKE 'a!_b' ESCAPE '!'
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 6:
+  sql:
+    SELECT 'a!b' LIKE 'a!!b' ESCAPE '!'
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN NOT NULL
+    rows:
+      [0] true
+
+statement 7:
+  sql:
+    SELECT NULL LIKE 'a%'
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN
+    rows:
+      [0] NULL
+
+statement 8:
+  sql:
+    SELECT 'abc' LIKE NULL
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN
+    rows:
+      [0] NULL
+
+statement 9:
+  sql:
+    SELECT NULL NOT LIKE 'a%'
+  result:
+    query
+    columns:
+      [0] <unnamed> BOOLEAN
+    rows:
+      [0] NULL

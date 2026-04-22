@@ -29,13 +29,13 @@ func NewTypeChecker(bindings *Bindings) *TypeChecker {
 // expression whose type remains context-dependent or indeterminate.
 type Types struct {
 	exprs   map[parser.Node]sqltypes.TypeDesc
-	selects map[*parser.SelectStmt][]sqltypes.TypeDesc
+	queries map[parser.QueryExpr][]sqltypes.TypeDesc
 }
 
 func newTypes() *Types {
 	return &Types{
 		exprs:   make(map[parser.Node]sqltypes.TypeDesc),
-		selects: make(map[*parser.SelectStmt][]sqltypes.TypeDesc),
+		queries: make(map[parser.QueryExpr][]sqltypes.TypeDesc),
 	}
 }
 
@@ -59,11 +59,16 @@ func (t *Types) Select(stmt *parser.SelectStmt) ([]sqltypes.TypeDesc, bool) {
 
 // SelectOutputs returns the projected output types for one SELECT statement.
 func (t *Types) SelectOutputs(stmt *parser.SelectStmt) ([]sqltypes.TypeDesc, bool) {
-	if t == nil || stmt == nil {
+	return t.QueryOutputs(stmt)
+}
+
+// QueryOutputs returns the projected output types for one query expression.
+func (t *Types) QueryOutputs(query parser.QueryExpr) ([]sqltypes.TypeDesc, bool) {
+	if t == nil || query == nil {
 		return nil, false
 	}
 
-	descs, ok := t.selects[stmt]
+	descs, ok := t.queries[query]
 	if !ok {
 		return nil, false
 	}
@@ -81,14 +86,14 @@ func (t *Types) bindExpr(node parser.Node, desc sqltypes.TypeDesc) {
 	t.exprs[node] = desc
 }
 
-func (t *Types) bindSelect(stmt *parser.SelectStmt, descs []sqltypes.TypeDesc) {
-	if t == nil || stmt == nil {
+func (t *Types) bindQuery(query parser.QueryExpr, descs []sqltypes.TypeDesc) {
+	if t == nil || query == nil {
 		return
 	}
 
 	out := make([]sqltypes.TypeDesc, len(descs))
 	copy(out, descs)
-	t.selects[stmt] = out
+	t.queries[query] = out
 }
 
 type typeCheckPass struct {

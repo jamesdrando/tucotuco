@@ -92,7 +92,10 @@ func TestResolverAllowsCorrelatedExpressionSubqueries(t *testing.T) {
 
 	stmt := script.Nodes[0].(*parser.SelectStmt)
 	exists := stmt.Where.(*parser.ExistsExpr)
-	innerQuery := exists.Query
+	innerQuery, ok := exists.Query.(*parser.SelectStmt)
+	if !ok {
+		t.Fatalf("exists.Query = %T, want *parser.SelectStmt", exists.Query)
+	}
 	comparison := innerQuery.Where.(*parser.BinaryExpr)
 	column := comparison.Left.(*parser.QualifiedName)
 
@@ -118,7 +121,10 @@ func TestResolverPrefersLocalNamesInsideCorrelatedSubqueries(t *testing.T) {
 
 	stmt := script.Nodes[0].(*parser.SelectStmt)
 	exists := stmt.Where.(*parser.ExistsExpr)
-	innerQuery := exists.Query
+	innerQuery, ok := exists.Query.(*parser.SelectStmt)
+	if !ok {
+		t.Fatalf("exists.Query = %T, want *parser.SelectStmt", exists.Query)
+	}
 	comparison := innerQuery.Where.(*parser.BinaryExpr)
 	column := comparison.Left.(*parser.QualifiedName)
 
@@ -146,6 +152,32 @@ func TestResolverKeepsDerivedTablesIsolatedFromOuterScope(t *testing.T) {
 	}
 	if diags[0].Message != `relation "o" does not exist` {
 		t.Fatalf("diagnostic message = %q, want %q", diags[0].Message, `relation "o" does not exist`)
+	}
+}
+
+func TestResolverResolvesSetOpDerivedTableColumns(t *testing.T) {
+	t.Parallel()
+
+	cat := testCatalog(t)
+	script := parseScript(t, "SELECT q.id FROM (SELECT id FROM orders UNION SELECT id FROM orders) AS q")
+
+	bindings, diags := NewResolver(cat).ResolveScript(script)
+	if len(diags) != 0 {
+		t.Fatalf("ResolveScript() diagnostics = %#v, want none", diags)
+	}
+
+	stmt := script.Nodes[0].(*parser.SelectStmt)
+	column := stmt.SelectList[0].Expr.(*parser.QualifiedName)
+
+	binding, ok := bindings.Column(column)
+	if !ok {
+		t.Fatalf("Column(%T) missing binding", column)
+	}
+	if binding.Relation == nil || binding.Relation.Name != "q" {
+		t.Fatalf("binding.Relation = %#v, want alias q", binding.Relation)
+	}
+	if binding.Descriptor == nil || binding.Descriptor.Name != "id" {
+		t.Fatalf("binding.Descriptor = %#v, want descriptor for id", binding.Descriptor)
 	}
 }
 

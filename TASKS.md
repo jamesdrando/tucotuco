@@ -244,13 +244,18 @@
   - Added explicit parser/analyzer support for scalar subqueries, `EXISTS`, `IN (SELECT ...)`, and correlated outer-scope resolution with local-first shadowing while keeping derived-table `FROM` subqueries non-lateral.
   - Extended embed/executor lowering to execute scalar/`EXISTS`/`IN` subqueries with correlated outer-row binding, scalar cardinality diagnostics, planner `Join` lowering for comma/CROSS paths, and new SQL-92 golden coverage in `061_064`.
 
-- [ ] **T-132** — UNION / INTERSECT / EXCEPT `[parallel-safe]` `depends: M1`
+- [x] **T-132** — UNION / INTERSECT / EXCEPT `[parallel-safe]` `depends: M1`
+  - Added parser/analyzer/planner/embed support for query-expression set operations via `QueryExpr` / `SetOpExpr`, preserving `INTERSECT` precedence over `UNION` / `EXCEPT`, `ALL` vs default `DISTINCT` semantics, and parenthesized set-operation subqueries.
+  - Added SQL-92 golden coverage in `068_set_operations` plus focused parser/analyzer/planner/embed tests and repo-wide green validation.
 
-- [ ] **T-133** — CASE expression (searched and simple) `[parallel-safe]` `depends: M1`
+- [x] **T-133** — CASE expression (searched and simple) `[parallel-safe]` `depends: M1`
+  - Closed out the already-landed searched/simple `CASE` path with SQL-92 golden coverage in `065_case_expressions`.
 
-- [ ] **T-134** — LIKE / NOT LIKE pattern matching `[parallel-safe]` `depends: M1`
+- [x] **T-134** — LIKE / NOT LIKE pattern matching `[parallel-safe]` `depends: M1`
+  - Closed out the existing `LIKE` / `NOT LIKE` implementation with SQL-92 golden coverage for positive, negated, `ESCAPE`, and NULL-propagating cases in `066_like_patterns`.
 
-- [ ] **T-135** — Full NULL semantics: IS NULL, IS NOT NULL, three-valued logic everywhere `[parallel-safe]` `depends: M1`
+- [x] **T-135** — Full NULL semantics: IS NULL, IS NOT NULL, three-valued logic everywhere `[parallel-safe]` `depends: M1`
+  - Closed out the existing NULL / three-valued-logic semantics with SQL-92 golden coverage for `IS NULL`, `IS NOT NULL`, `IS UNKNOWN`, `IS [NOT] DISTINCT FROM`, and UNKNOWN-filter behavior in `067_null_logic`.
 
 - [ ] **T-136** — Full SQL-92 scalar function library (SPEC §8.6 string + numeric) `[parallel-safe]` `depends: M1`
 

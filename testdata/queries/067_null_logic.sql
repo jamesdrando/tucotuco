@@ -1,0 +1,13 @@
+CREATE TABLE null_logic (id INTEGER NOT NULL, flag BOOLEAN, score INTEGER);
+INSERT INTO null_logic VALUES (1, TRUE, 10);
+INSERT INTO null_logic VALUES (2, FALSE, NULL);
+INSERT INTO null_logic VALUES (3, NULL, 10);
+SELECT id, flag IS NULL AS flag_is_null, flag IS NOT NULL AS flag_is_not_null FROM null_logic;
+SELECT id FROM null_logic WHERE flag;
+SELECT id FROM null_logic WHERE NOT flag;
+SELECT id FROM null_logic WHERE flag IS UNKNOWN;
+SELECT id FROM null_logic WHERE score IS DISTINCT FROM NULL;
+SELECT id FROM null_logic WHERE score IS NOT DISTINCT FROM NULL;
+SELECT id FROM null_logic WHERE score = NULL;
+SELECT id FROM null_logic WHERE NOT (score = NULL);
+SELECT id FROM null_logic WHERE (score = 10) IS UNKNOWN;

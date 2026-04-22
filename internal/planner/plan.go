@@ -22,6 +22,8 @@ const (
 	KindProject Kind = "Project"
 	// KindJoin identifies a logical join.
 	KindJoin Kind = "Join"
+	// KindSetOp identifies a logical set-operation node.
+	KindSetOp Kind = "SetOp"
 	// KindLimit identifies a logical row-count limit.
 	KindLimit Kind = "Limit"
 )
@@ -316,6 +318,81 @@ func (j *Join) String() string {
 	return formatPlan(KindJoin, details...)
 }
 
+// SetOp combines two child plans with one SQL set operator.
+type SetOp struct {
+	// Left is the left child plan.
+	Left Plan
+	// Right is the right child plan.
+	Right Plan
+	// Operator is UNION, INTERSECT, or EXCEPT.
+	Operator string
+	// SetQuantifier is ALL or DISTINCT; the empty string means default DISTINCT.
+	SetQuantifier string
+	// OutputColumns are the visible columns emitted by the set operation.
+	OutputColumns []Column
+}
+
+// NewSetOp constructs a logical set-operation node.
+func NewSetOp(left Plan, right Plan, operator string, setQuantifier string, columns ...Column) *SetOp {
+	return &SetOp{
+		Left:          left,
+		Right:         right,
+		Operator:      operator,
+		SetQuantifier: setQuantifier,
+		OutputColumns: append([]Column(nil), columns...),
+	}
+}
+
+func (*SetOp) plan() {}
+
+// Kind reports the operator kind.
+func (*SetOp) Kind() Kind {
+	return KindSetOp
+}
+
+// Children reports both set-operation inputs.
+func (s *SetOp) Children() []Plan {
+	if s == nil {
+		return nil
+	}
+
+	children := make([]Plan, 0, 2)
+	if s.Left != nil {
+		children = append(children, s.Left)
+	}
+	if s.Right != nil {
+		children = append(children, s.Right)
+	}
+
+	return children
+}
+
+// Columns reports the set-operation output schema.
+func (s *SetOp) Columns() []Column {
+	if s == nil {
+		return nil
+	}
+
+	return append([]Column(nil), s.OutputColumns...)
+}
+
+// String returns a stable one-line rendering of the set operation.
+func (s *SetOp) String() string {
+	if s == nil {
+		return KindSetOp.String()
+	}
+
+	details := []string{}
+	if strings.TrimSpace(s.Operator) != "" {
+		details = append(details, "operator="+s.Operator)
+	}
+	if strings.TrimSpace(s.SetQuantifier) != "" {
+		details = append(details, "quantifier="+s.SetQuantifier)
+	}
+
+	return formatPlan(KindSetOp, details...)
+}
+
 // Limit truncates its input to a fixed number of rows.
 type Limit struct {
 	// Input is the child plan whose rows are truncated.
@@ -441,9 +518,9 @@ func formatExpr(node parser.Node) string {
 	case *parser.BetweenExpr:
 		return formatBetweenExpr(expr)
 	case *parser.SubqueryExpr:
-		return "(" + formatSelectQuery(expr.Query) + ")"
+		return "(" + formatQueryExpr(expr.Query) + ")"
 	case *parser.ExistsExpr:
-		return "EXISTS (" + formatSelectQuery(expr.Query) + ")"
+		return "EXISTS (" + formatQueryExpr(expr.Query) + ")"
 	case *parser.InExpr:
 		return formatInExpr(expr)
 	case *parser.LikeExpr:
@@ -518,7 +595,7 @@ func formatInExpr(expr *parser.InExpr) string {
 			operator = " NOT IN "
 		}
 
-		return formatExpr(expr.Expr) + operator + "(" + formatSelectQuery(expr.Query) + ")"
+		return formatExpr(expr.Expr) + operator + "(" + formatQueryExpr(expr.Query) + ")"
 	}
 
 	values := make([]string, 0, len(expr.List))
@@ -534,11 +611,20 @@ func formatInExpr(expr *parser.InExpr) string {
 	return formatExpr(expr.Expr) + operator + "(" + strings.Join(values, ", ") + ")"
 }
 
-func formatSelectQuery(stmt *parser.SelectStmt) string {
-	if stmt == nil {
+func formatQueryExpr(query parser.QueryExpr) string {
+	switch query := query.(type) {
+	case nil:
 		return ""
+	case *parser.SelectStmt:
+		return formatSelectQuery(query)
+	case *parser.SetOpExpr:
+		return formatQueryExpr(query.Left) + " " + query.Operator + formatSetQuantifier(query.SetQuantifier) + " " + formatQueryExpr(query.Right)
+	default:
+		return fmt.Sprintf("%T", query)
 	}
+}
 
+func formatSelectQuery(stmt *parser.SelectStmt) string {
 	parts := []string{"SELECT " + formatSelectList(stmt.SelectList)}
 	if len(stmt.From) != 0 {
 		parts = append(parts, "FROM "+formatFromNodes(stmt.From))
@@ -548,6 +634,14 @@ func formatSelectQuery(stmt *parser.SelectStmt) string {
 	}
 
 	return strings.Join(parts, " ")
+}
+
+func formatSetQuantifier(setQuantifier string) string {
+	if strings.TrimSpace(setQuantifier) == "" {
+		return ""
+	}
+
+	return " " + setQuantifier
 }
 
 func formatSelectList(items []*parser.SelectItem) string {
@@ -603,8 +697,8 @@ func formatFromNode(node parser.Node) string {
 		return text
 	case *parser.QualifiedName:
 		return formatQualifiedName(node)
-	case *parser.SelectStmt:
-		return "(" + formatSelectQuery(node) + ")"
+	case parser.QueryExpr:
+		return "(" + formatQueryExpr(node) + ")"
 	default:
 		return formatExpr(node)
 	}

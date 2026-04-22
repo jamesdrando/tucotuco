@@ -1,0 +1,55 @@
+fixture: 065_case_expressions
+
+statement 1:
+  sql:
+    CREATE TABLE metrics (id INTEGER NOT NULL, status VARCHAR(10) NOT NULL, score INTEGER NOT NULL)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO metrics VALUES (1, 'new', 95)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO metrics VALUES (2, 'open', 70)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    INSERT INTO metrics VALUES (3, 'closed', 50)
+  result:
+    ok
+    rows_affected: 1
+
+statement 5:
+  sql:
+    SELECT id, CASE WHEN score >= 80 THEN 'pass' WHEN score >= 60 THEN 'review' ELSE 'fail' END AS score_band FROM metrics
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+      [1] score_band VARCHAR(6) NOT NULL
+    rows:
+      [0] 1 | "pass"
+      [1] 2 | "review"
+      [2] 3 | "fail"
+
+statement 6:
+  sql:
+    SELECT id, CASE status WHEN 'new' THEN 'fresh' WHEN 'open' THEN 'active' ELSE 'closed' END AS status_label FROM metrics
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+      [1] status_label VARCHAR(6) NOT NULL
+    rows:
+      [0] 1 | "fresh"
+      [1] 2 | "active"
+      [2] 3 | "closed"

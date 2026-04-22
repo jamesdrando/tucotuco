@@ -47,8 +47,8 @@ type correlatedContext struct {
 	shape rowShape
 }
 
-func buildSelectOperator(
-	stmt *parser.SelectStmt,
+func buildQueryOperator(
+	query parser.QueryExpr,
 	bindings *analyzer.Bindings,
 	types *analyzer.Types,
 	store storage.Storage,
@@ -60,8 +60,8 @@ func buildSelectOperator(
 		store:    store,
 		tx:       tx,
 	}
-	if selectContainsJoin(stmt) {
-		lowered, err := lowerer.lowerSelect(stmt)
+	if queryContainsJoin(query) {
+		lowered, err := lowerer.lowerQuery(query)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -69,7 +69,7 @@ func buildSelectOperator(
 		return lowered.op, lowered.columns, nil
 	}
 
-	plan, diags := planner.NewBuilder(bindings, types).Build(stmt)
+	plan, diags := planner.NewBuilder(bindings, types).Build(query)
 	if len(diags) != 0 {
 		return nil, nil, diagnosticsError(diags)
 	}
@@ -80,6 +80,32 @@ func buildSelectOperator(
 	}
 
 	return lowered.op, lowered.columns, nil
+}
+
+func buildSelectOperator(
+	stmt *parser.SelectStmt,
+	bindings *analyzer.Bindings,
+	types *analyzer.Types,
+	store storage.Storage,
+	tx storage.Transaction,
+) (executor.Operator, []planner.Column, error) {
+	return buildQueryOperator(stmt, bindings, types, store, tx)
+}
+
+func (l planLowerer) lowerQuery(query parser.QueryExpr) (loweredPlan, error) {
+	switch query := query.(type) {
+	case nil:
+		return loweredPlan{
+			op:    &oneRowOperator{},
+			shape: rowShape{},
+		}, nil
+	case *parser.SelectStmt:
+		return l.lowerSelect(query)
+	case *parser.SetOpExpr:
+		return l.lowerSetOpQuery(query)
+	default:
+		return loweredPlan{}, featureError(nil, "unsupported query expression %T", query)
+	}
 }
 
 func (l planLowerer) lower(plan planner.Plan) (loweredPlan, error) {
@@ -166,6 +192,29 @@ func (l planLowerer) lower(plan planner.Plan) (loweredPlan, error) {
 			shape:   shapeFromColumns(node.Columns()),
 			columns: node.Columns(),
 		}, nil
+	case *planner.SetOp:
+		left, err := l.lower(node.Left)
+		if err != nil {
+			return loweredPlan{}, err
+		}
+		right, err := l.lower(node.Right)
+		if err != nil {
+			return loweredPlan{}, err
+		}
+
+		return loweredPlan{
+			op: executor.NewSetOp(
+				left.op,
+				right.op,
+				node.Operator,
+				node.SetQuantifier,
+				columnTypes(left.columns),
+				columnTypes(right.columns),
+				columnTypes(node.Columns()),
+			),
+			shape:   shapeFromColumns(node.Columns()),
+			columns: node.Columns(),
+		}, nil
 	case *planner.Limit:
 		child, err := l.lower(node.Input)
 		if err != nil {
@@ -217,6 +266,48 @@ func (l planLowerer) lowerSelect(stmt *parser.SelectStmt) (loweredPlan, error) {
 	}
 
 	return l.lowerSelectProjection(stmt, input)
+}
+
+func (l planLowerer) lowerSetOpQuery(query *parser.SetOpExpr) (loweredPlan, error) {
+	if query == nil {
+		return loweredPlan{
+			op:    &oneRowOperator{},
+			shape: rowShape{},
+		}, nil
+	}
+
+	left, err := l.lowerQuery(query.Left)
+	if err != nil {
+		return loweredPlan{}, err
+	}
+	right, err := l.lowerQuery(query.Right)
+	if err != nil {
+		return loweredPlan{}, err
+	}
+
+	outputs, ok := l.queryOutputs(query)
+	if !ok {
+		return loweredPlan{}, internalError(query, "embed is missing query output metadata")
+	}
+
+	columns := l.queryColumns(query, outputs)
+	if len(columns) != len(outputs) {
+		return loweredPlan{}, internalError(query, "embed output metadata does not match the set operation")
+	}
+
+	return loweredPlan{
+		op: executor.NewSetOp(
+			left.op,
+			right.op,
+			query.Operator,
+			query.SetQuantifier,
+			columnTypes(left.columns),
+			columnTypes(right.columns),
+			columnTypes(columns),
+		),
+		shape:   shapeFromColumns(columns),
+		columns: columns,
+	}, nil
 }
 
 func (l planLowerer) lowerSelectInput(stmt *parser.SelectStmt) (loweredPlan, error) {
@@ -296,8 +387,8 @@ func (l planLowerer) lowerFromSource(source *parser.FromSource) (loweredPlan, er
 			shape:   shapeFromRelationBinding(relation, l.types),
 			columns: columnsFromRelationBinding(relation, l.types),
 		}
-	case *parser.SelectStmt:
-		child, err := l.lowerSelect(inner)
+	case parser.QueryExpr:
+		child, err := l.lowerQuery(inner)
 		if err != nil {
 			return loweredPlan{}, err
 		}
@@ -540,6 +631,41 @@ func columnsFromRelationBinding(relation *analyzer.RelationBinding, types *analy
 	return columns
 }
 
+func columnsFromRelationBindingWithTypes(
+	relation *analyzer.RelationBinding,
+	types *analyzer.Types,
+	outputs []sqltypes.TypeDesc,
+) []planner.Column {
+	if relation == nil {
+		return nil
+	}
+
+	columns := make([]planner.Column, 0, len(relation.Columns))
+	for index, column := range relation.Columns {
+		desc := bindingType(column, types)
+		if desc.Kind == sqltypes.TypeKindInvalid && index < len(outputs) {
+			desc = outputs[index]
+		}
+		columns = append(columns, planner.Column{
+			Name:         safeBindingName(column),
+			Type:         desc,
+			RelationName: safeRelationName(column),
+			Binding:      column,
+		})
+	}
+
+	return columns
+}
+
+func columnTypes(columns []planner.Column) []sqltypes.TypeDesc {
+	types := make([]sqltypes.TypeDesc, 0, len(columns))
+	for _, column := range columns {
+		types = append(types, column.Type)
+	}
+
+	return types
+}
+
 func compileExpression(
 	bindings *analyzer.Bindings,
 	types *analyzer.Types,
@@ -727,7 +853,7 @@ func (m expressionMetadata) compileInSubquery(node *parser.InExpr) (executor.Com
 	), nil
 }
 
-func (m expressionMetadata) materializeSubquery(query *parser.SelectStmt, outerRow executor.Row) ([]executor.Row, []planner.Column, error) {
+func (m expressionMetadata) materializeSubquery(query parser.QueryExpr, outerRow executor.Row) ([]executor.Row, []planner.Column, error) {
 	lowerer := planLowerer{
 		bindings: m.bindings,
 		types:    m.types,
@@ -739,7 +865,7 @@ func (m expressionMetadata) materializeSubquery(query *parser.SelectStmt, outerR
 		},
 	}
 
-	lowered, err := lowerer.lowerSelect(query)
+	lowered, err := lowerer.lowerQuery(query)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -994,12 +1120,25 @@ func (l planLowerer) boundRelation(nodes ...parser.Node) (*analyzer.RelationBind
 	return nil, false
 }
 
-func (l planLowerer) selectOutputs(stmt *parser.SelectStmt) ([]sqltypes.TypeDesc, bool) {
+func (l planLowerer) queryColumns(query parser.QueryExpr, outputs []sqltypes.TypeDesc) []planner.Column {
+	relation, ok := l.boundRelation(query)
+	if !ok || relation == nil {
+		return nil
+	}
+
+	return columnsFromRelationBindingWithTypes(relation, l.types, outputs)
+}
+
+func (l planLowerer) queryOutputs(query parser.QueryExpr) ([]sqltypes.TypeDesc, bool) {
 	if l.types == nil {
 		return nil, false
 	}
 
-	return l.types.SelectOutputs(stmt)
+	return l.types.QueryOutputs(query)
+}
+
+func (l planLowerer) selectOutputs(stmt *parser.SelectStmt) ([]sqltypes.TypeDesc, bool) {
+	return l.queryOutputs(stmt)
 }
 
 func nextOutputType(types []sqltypes.TypeDesc, cursor *int) (sqltypes.TypeDesc, bool) {
@@ -1050,6 +1189,19 @@ func validateSelectForEmbed(stmt *parser.SelectStmt) error {
 	return nil
 }
 
+func queryContainsJoin(query parser.QueryExpr) bool {
+	switch query := query.(type) {
+	case nil:
+		return false
+	case *parser.SelectStmt:
+		return selectContainsJoin(query)
+	case *parser.SetOpExpr:
+		return queryContainsJoin(query.Left) || queryContainsJoin(query.Right)
+	default:
+		return false
+	}
+}
+
 func selectContainsJoin(stmt *parser.SelectStmt) bool {
 	if stmt == nil {
 		return false
@@ -1072,8 +1224,8 @@ func fromNodeContainsJoin(node parser.Node) bool {
 		return true
 	case *parser.FromSource:
 		return fromNodeContainsJoin(node.Source)
-	case *parser.SelectStmt:
-		return selectContainsJoin(node)
+	case parser.QueryExpr:
+		return queryContainsJoin(node)
 	default:
 		return false
 	}

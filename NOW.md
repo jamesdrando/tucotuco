@@ -18,61 +18,61 @@
 
 ## JUST DONE
 
-Completed `TASKS.md` T-131 by adding SQL-92 subquery support across parser, analyzer, planner formatting, embed lowering, and SQL-92 golden coverage.
+Completed `TASKS.md` T-132 through T-135 by landing SQL-92 set operations end-to-end and closing out the already-present `CASE`, `LIKE`, and NULL/three-valued-logic paths with compliance coverage.
 
-- Parallelized discovery and implementation with bounded subagents across parser/analyzer, fixture/compliance, and diff review, then completed the stalled runtime slice locally to keep the baton moving.
-- Added explicit parser/analyzer support for:
-  - scalar subqueries via parenthesized `SELECT`
-  - `EXISTS` / `NOT EXISTS`
-  - `IN (SELECT ...)`
-  - correlated outer-scope resolution with local-first shadowing
-  - isolated derived-table `FROM` subqueries with no accidental `LATERAL` broadening
-- Extended runtime/lowering support for:
-  - subquery-aware expression compilation via an executor metadata callback seam
-  - correlated subquery execution over the current outer row in `pkg/embed`
-  - scalar-subquery cardinality diagnostics (`SQLSTATE 21000`)
-  - planner `Join` lowering in embed so comma/CROSS paths share the same subquery-capable execution seam
-  - outer-join nullability propagation through manual embed join lowering
-- Added focused and golden coverage:
-  - parser/analyzer tests for scalar/`EXISTS`/`IN`/correlated semantics
-  - planner explain coverage for correlated `EXISTS`
-  - embed end-to-end tests for scalar, `EXISTS`, `IN`, correlated, and scalar-cardinality failure paths
-  - new SQL-92 golden fixtures `061_scalar_subquery`, `062_exists_subquery`, `063_in_subquery`, and `064_correlated_subquery`
+- Parallelized the frontier with six discovery subagents and four implementation workers, keeping `internal/parser/` serial while independent SQL-92 compliance slices landed in parallel.
+- Added explicit query-expression support for:
+  - `UNION`, `INTERSECT`, and `EXCEPT`
+  - `ALL` and default `DISTINCT` set semantics
+  - standard precedence (`INTERSECT` before `UNION` / `EXCEPT`)
+  - parenthesized set-operation subqueries at the statement, derived-table, scalar-subquery, and `INSERT ... SELECT` seams
+- Extended analyzer/planner/embed support for:
+  - `QueryExpr` / `SetOpExpr` output-shape binding and common-supertype checking
+  - set-operation formatting in logical plans
+  - runtime lowering of set operations in `pkg/embed`
+  - end-to-end set-operation execution without regressing the `T-131` correlated-subquery baseline
+- Closed out existing SQL-92 expression support with new golden fixtures:
+  - `065_case_expressions`
+  - `066_like_patterns`
+  - `067_null_logic`
+  - `068_set_operations`
 - Revalidated focused coverage:
-  - `env GOCACHE=/tmp/tucotuco-go-test-t131-focused2 go test ./internal/parser ./internal/analyzer ./internal/planner ./internal/executor ./pkg/embed ./compliance/sql92`
+  - `env GOCACHE=/tmp/tucotuco-go-test-fixtures1 go test ./compliance/sql92 -run 'TestGoldenScripts/(065_case_expressions|066_like_patterns|067_null_logic)$' -count=1`
+  - `env GOCACHE=/tmp/tucotuco-go-test-t132-live go test ./internal/parser ./internal/analyzer ./internal/planner ./pkg/embed ./compliance/sql92`
   - `git diff --check`
 - Revalidated repo-wide regression/build/lint coverage:
-  - `env GOCACHE=/tmp/tucotuco-go-test-all-t131-final go test ./...`
-  - `env GOCACHE=/tmp/tucotuco-go-build-all-t131-final go build ./...`
-  - `env XDG_CACHE_HOME=/tmp/tucotuco-xdg-cache-t131b GOCACHE=/tmp/tucotuco-go-lint-t131b golangci-lint run ./...`
+  - `env GOCACHE=/tmp/tucotuco-go-test-all-t132batch go test ./...`
+  - `env GOCACHE=/tmp/tucotuco-go-build-all-t132batch go build ./...`
+  - `env XDG_CACHE_HOME=/tmp/tucotuco-xdg-cache-t132batch2 GOCACHE=/tmp/tucotuco-go-lint-t132batch2 golangci-lint run ./...`
 
 ---
 
 ## NEXT
 
-**Task(s) to execute:** T-132
+**Task(s) to execute:** T-136
 
 **Instructions for the incoming agent:**
 
 1. Read `AGENTS.md` and `INDEX.md` again before starting the next SQL task.
-2. Start **T-132** as the first unchecked task in `TASKS.md`: add `UNION` / `INTERSECT` / `EXCEPT` on top of the now-stable join + subquery query path.
-3. Treat `T-133` through `T-137` as the parallel-safe frontier after the first planning pass if you want to use the full 6-agent budget; they are all unblocked by `M1`.
-4. Preserve the new `T-131` subquery contract while working forward:
+2. Start **T-136** as the first unchecked task in `TASKS.md`: extend the scalar function library in `internal/analyzer/typecheck.go` and `internal/executor/eval.go` on top of the now-stable query-expression baseline.
+3. Treat **T-137** as the immediate parallel-safe companion after the first planning pass; it remains unblocked by `M1` but shares planner/embed territory with any broader query-shape work.
+4. Preserve the new `T-132` / `T-131` query baseline while working forward:
+  - statement-level queries are now `parser.QueryExpr`, not just `*parser.SelectStmt`
+  - set operations now live in `SetOpExpr` with `INTERSECT` precedence over `UNION` / `EXCEPT`
   - expression subqueries can correlate to outer scopes
   - derived-table `FROM` subqueries are still isolated unless a future task explicitly adds `LATERAL`
   - scalar subqueries now raise `SQLSTATE 21000` on multi-row results
-5. The new subquery baseline now lives in:
+5. The current query-expression baseline now lives in:
   - `internal/parser/parser.go` / `internal/parser/syntax.go`
-  - `internal/analyzer/resolve.go` / `internal/analyzer/typecheck.go`
-  - `internal/planner/plan.go`
-  - `internal/executor/eval.go`
-  - `pkg/embed/lower.go`
-  - `testdata/results/061_*.txt` through `064_*.txt`
-6. `JOIN ... USING` and `NATURAL JOIN` are still explicit feature errors after `T-130`; do not silently broaden them while working on `T-132+`.
+  - `internal/analyzer/resolve.go` / `internal/analyzer/typecheck.go` / `internal/analyzer/types.go`
+  - `internal/planner/builder.go` / `internal/planner/plan.go`
+  - `pkg/embed/query_exec.go` / `pkg/embed/lower.go`
+  - `testdata/results/065_*.txt` through `068_*.txt`
+6. `JOIN ... USING` and `NATURAL JOIN` are still explicit feature errors after `T-130`; do not silently broaden them while working on `T-136+`.
 
-**Spec references:** `SPEC.md` §8.5 (next), `SPEC.md` §8.2 (new baseline)
+**Spec references:** `SPEC.md` §8.6 (next), `SPEC.md` §8.5 and `SPEC.md` §8.2 (new baseline)
 
-**Estimated parallelism available:** 6 streams across `T-132` through `T-137` after the first planning pass
+**Estimated parallelism available:** 6 streams across `T-136` through `T-138` after the first planning pass
 
 ---
 
@@ -139,3 +139,4 @@ _None._
 | #034 | 2026-04-22 | Codex | Completed T-128 | Parallelized the storage-contract migration with five bounded subagents, extracted a shared storage behavior suite under `internal/storage/storagetest`, adopted it in both memory and paged storage, restored the memory-specific reserved-handle regression, passed focused and repo-wide tests/build/lint, and advanced the baton to `T-130` |
 | #035 | 2026-04-22 | Codex | Completed T-130 | Added logical/planner/executor/embed support for `INNER`/`LEFT`/`RIGHT`/`FULL`/comma-CROSS joins, preserved joined-column provenance and outer-join nullability through lowering, updated SQL-92 join/comma fixtures plus explicit `USING`/`NATURAL` feature errors, passed focused and repo-wide tests/build/lint, and advanced the baton to `T-131` |
 | #036 | 2026-04-22 | Codex | Completed T-131 | Added parser/analyzer/runtime support for scalar/`EXISTS`/`IN`/correlated subqueries, extended embed lowering with subquery execution and scalar-cardinality diagnostics, added SQL-92 fixtures `061_064`, passed focused and repo-wide tests/build/lint, and advanced the baton to `T-132` |
+| #037 | 2026-04-22 | Codex | Completed T-132 through T-135 | Added end-to-end `UNION`/`INTERSECT`/`EXCEPT` query expressions plus SQL-92 fixtures `065_068` for CASE, LIKE, NULL logic, and set operations, passed focused and repo-wide tests/build/lint, and advanced the baton to `T-136` |

@@ -312,8 +312,8 @@ func (p *resolvePass) resolveScript(script *parser.Script) {
 
 func (p *resolvePass) resolveStatement(node parser.Node) {
 	switch node := node.(type) {
-	case *parser.SelectStmt:
-		p.resolveSelect(node, nil)
+	case parser.QueryExpr:
+		p.resolveQuery(node, nil)
 	case *parser.InsertStmt:
 		p.resolveInsert(node)
 	case *parser.UpdateStmt:
@@ -324,6 +324,23 @@ func (p *resolvePass) resolveStatement(node parser.Node) {
 		p.resolveCreateTable(node)
 	case *parser.DropTableStmt:
 		p.resolveDropTable(node)
+	}
+}
+
+func (p *resolvePass) resolveQuery(query parser.QueryExpr, outer *scope) *RelationBinding {
+	switch query := query.(type) {
+	case nil:
+		return nil
+	case *parser.SelectStmt:
+		relation := p.resolveSelect(query, outer)
+		p.bindRelation(query, relation)
+		return relation
+	case *parser.SetOpExpr:
+		relation := p.resolveSetOp(query, outer)
+		p.bindRelation(query, relation)
+		return relation
+	default:
+		return nil
 	}
 }
 
@@ -353,6 +370,25 @@ func (p *resolvePass) resolveSelect(stmt *parser.SelectStmt, outer *scope) *Rela
 	}
 
 	return projection
+}
+
+func (p *resolvePass) resolveSetOp(expr *parser.SetOpExpr, outer *scope) *RelationBinding {
+	if expr == nil {
+		return nil
+	}
+
+	left := p.resolveQuery(expr.Left, outer)
+	p.resolveQuery(expr.Right, outer)
+	if left == nil {
+		return nil
+	}
+
+	relation := newRelationBinding("", storage.TableID{}, nil)
+	for _, column := range left.Columns {
+		relation.addExistingColumn(column)
+	}
+
+	return relation
 }
 
 func (p *resolvePass) resolveSelectItem(item *parser.SelectItem, exprScope *scope, starScope *scope, projection *RelationBinding) {
@@ -452,8 +488,8 @@ func (p *resolvePass) resolveInsert(stmt *parser.InsertStmt) {
 			}
 		}
 	case *parser.InsertQuerySource:
-		if query, ok := source.Query.(*parser.SelectStmt); ok {
-			p.resolveSelect(query, nil)
+		if query, ok := source.Query.(parser.QueryExpr); ok {
+			p.resolveQuery(query, nil)
 		}
 	case *parser.InsertDefaultValuesSource:
 	}
@@ -569,8 +605,8 @@ func (p *resolvePass) resolveFromSource(source *parser.FromSource, outer *scope)
 		relation := p.resolveCatalogRelation(inner, visibleName(source.Alias, inner))
 		p.bindRelation(source, relation)
 		return newScope(relation)
-	case *parser.SelectStmt:
-		relation := p.resolveSelect(inner, nil)
+	case parser.QueryExpr:
+		relation := p.resolveQuery(inner, nil)
 		if relation != nil && source.Alias != nil {
 			relation.Name = source.Alias.Name
 		}
@@ -671,13 +707,13 @@ func (p *resolvePass) resolveExpr(node parser.Node, currentScope *scope, project
 		p.resolveExpr(node.Lower, currentScope, projection)
 		p.resolveExpr(node.Upper, currentScope, projection)
 	case *parser.SubqueryExpr:
-		p.resolveSelect(node.Query, currentScope)
+		p.resolveQuery(node.Query, currentScope)
 	case *parser.ExistsExpr:
-		p.resolveSelect(node.Query, currentScope)
+		p.resolveQuery(node.Query, currentScope)
 	case *parser.InExpr:
 		p.resolveExpr(node.Expr, currentScope, projection)
 		if node.Query != nil {
-			p.resolveSelect(node.Query, currentScope)
+			p.resolveQuery(node.Query, currentScope)
 			return
 		}
 		for _, item := range node.List {
@@ -690,8 +726,8 @@ func (p *resolvePass) resolveExpr(node parser.Node, currentScope *scope, project
 	case *parser.IsExpr:
 		p.resolveExpr(node.Expr, currentScope, projection)
 		p.resolveExpr(node.Right, currentScope, projection)
-	case *parser.SelectStmt:
-		p.resolveSelect(node, currentScope)
+	case parser.QueryExpr:
+		p.resolveQuery(node, currentScope)
 	}
 }
 
