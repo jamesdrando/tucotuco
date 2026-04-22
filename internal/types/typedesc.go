@@ -17,6 +17,7 @@ var (
 // TypeKind identifies a SQL type family.
 type TypeKind uint8
 
+// TypeKind constants identify the supported SQL type families.
 const (
 	TypeKindInvalid TypeKind = iota
 	TypeKindSmallInt

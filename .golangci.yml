@@ -1,12 +1,15 @@
-run:
-  timeout: 5m
+version: "2"
 
 linters:
+  default: none
   enable:
     - errcheck
-    - gofmt
     - godot
     - govet
     - revive
     - staticcheck
     - unused
+
+formatters:
+  enable:
+    - gofmt

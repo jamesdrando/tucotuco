@@ -10,7 +10,7 @@
 
 ## CURRENT STATE
 
-**Date:** 2026-04-21
+**Date:** 2026-04-22
 **Phase:** Phase 2 — SQL-92 Full Compliance + Persistent Storage
 **Milestone in progress:** M2
 
@@ -18,48 +18,65 @@
 
 ## JUST DONE
 
-Completed `TASKS.md` T-126 by finishing the relation-scoped paged transaction layer and fixing the remaining T-125 redirect/version regressions.
+Completed `TASKS.md` T-127 by adding paged vacuum / dead tuple reclamation and clearing the repo-wide lint blocker now that `golangci-lint` is available again.
 
-- Kept the current committed `Relation.Insert` / `Update` / `Delete` / `Lookup` paths intact for non-transaction callers while exposing relation-local begin/commit/rollback in `internal/storage/paged/transaction.go`.
-- Preserved transaction-local visibility over committed rows plus staged writes:
-  - read-only transactions reject insert/update/delete
-  - transactions see their own inserts, updates, and deletes through both `Lookup` and `Scan`
-  - rollback discards staged writes without touching relation state or WAL
-- Fixed the paged versioning regressions called out by focused validation:
-  - redirect-target rewrites now end superseded replacement versions with `xmax` plus `forward_ptr`
-  - deleted redirect roots stay one-hop redirect slots, and version-floor scanning skips short dead payloads so reopen does not decode 16-byte redirect tombstones as tuple headers
-- Added T-126 coverage in `internal/storage/paged/transaction_test.go` for insert/update/delete rollback, read-only rejection, own-write visibility, and reopen durability for committed vs rolled-back transactions.
-- Revalidated the paged storage and WAL packages:
+- Parallelized the closeout with six bounded subagents:
+  - storage/WAL design review
+  - vacuum implementation
+  - vacuum regression coverage
+  - `golangci-lint` v2 config migration
+  - repo-wide lint cleanup across unaffected packages
+- Added `Relation.Vacuum()` in `internal/storage/paged/relation.go` as a relation-scoped, page-local reclamation pass that:
+  - compacts reclaimable in-page dead space without introducing a new heap format
+  - preserves one-hop redirect roots as logical entry points
+  - keeps reclaimed caller-visible slots as dead tombstones instead of reusable slots
+  - refreshes `InsertHint` without regressing metadata page `0` `NextVersion`
+- Added heap-page vacuum detection/compaction in `internal/storage/paged/heap_page.go` to reclaim:
+  - deleted tuple payloads
+  - superseded replacement-version payloads
+  - rewrite/redirect shrink slack tracked through `dead_bytes`
+- Added T-127 coverage in `internal/storage/paged/vacuum_test.go` for:
+  - delete-driven reclamation plus committed scan stability
+  - redirect-root lookup/scan stability through update chains
+  - active `RelationTx` behavior across external vacuum
+  - reopen/recovery durability plus `NextVersion` non-regression
+- Cleaned the focused paged-storage lint fallout in `internal/storage/paged/tuple.go` and `internal/storage/paged/store_test.go`.
+- Restored repo-wide linting by migrating `.golangci.yml` to the installed `golangci-lint` v2 syntax, then cleared the newly exposed backlog across `cmd/tucotuco`, `pkg/driver`, `pkg/embed`, `internal/script`, `internal/parser`, `internal/types`, `internal/executor`, `internal/lexer`, and `scripts/`.
+- Revalidated focused storage coverage:
   - `env GOCACHE=/tmp/tucotuco-go-test-focused go test ./internal/storage/paged ./internal/wal`
-- Revalidated repo-wide regression/build coverage:
-  - `env GOCACHE=/tmp/tucotuco-go-test-all go test ./...`
-  - `env GOCACHE=/tmp/tucotuco-go-build-all go build ./...`
+  - `env XDG_CACHE_HOME=/tmp/tucotuco-xdg-cache GOCACHE=/tmp/tucotuco-go-lint-focused golangci-lint run ./internal/storage/paged ./internal/wal`
+- Revalidated repo-wide regression/build/lint coverage:
+  - `env GOCACHE=/tmp/tucotuco-go-test-all-final go test ./...`
+  - `env GOCACHE=/tmp/tucotuco-go-build-all-final go build ./...`
+  - `env XDG_CACHE_HOME=/tmp/tucotuco-xdg-cache-all-final GOCACHE=/tmp/tucotuco-go-lint-all-final golangci-lint run ./...`
 - Confirmed formatting and whitespace hygiene:
-  - `gofmt -w internal/storage/paged/relation.go internal/storage/paged/scan.go internal/storage/paged/transaction.go internal/storage/paged/transaction_test.go`
   - `git diff --check`
-- Lint remains environment-blocked in this checkout: `golangci-lint` is not present on `PATH`.
-- Marked `TASKS.md` T-126 complete after focused and repo-wide validation passed.
+- Marked `TASKS.md` T-127 complete after focused and repo-wide validation passed.
 
 ---
 
 ## NEXT
 
-**Task(s) to execute:** T-127
+**Task(s) to execute:** T-128
 
 **Instructions for the incoming agent:**
 
 1. Read `AGENTS.md` and `INDEX.md` again before starting the next storage task.
-2. Start **T-127** by reclaiming dead tuple space from the current `T-125` / `T-126` version layout instead of introducing a second heap format.
-3. Treat redirected roots plus ended tuple versions as the vacuum input model:
-  - live redirect roots remain logical entry points
-  - replacement and deleted tuple headers carry the version-chain metadata that vacuum must respect
-4. Preserve compatibility with the current WAL/recovery path and the relation-local `NextVersion` counter on metadata page `0`.
-5. Keep `T-128` in mind while extending paged tests so vacuum changes do not make the committed and transaction-local scan behavior drift.
-6. Lint remains environment-blocked unless a `golangci-lint` entrypoint is restored in this checkout.
+2. Start **T-128** by migrating the existing in-memory storage behavior coverage onto paged storage instead of introducing a second semantic baseline.
+3. Use the new paged regression seams as the expected storage contract:
+  - committed `Lookup` / `Scan` must keep root-handle stability through redirects
+  - relation-local transactions must stay aligned with committed state plus own writes
+  - vacuumed relations must preserve reopen/recovery behavior
+4. Reuse the current paged helpers and fixtures where practical:
+  - `internal/storage/paged/vacuum_test.go`
+  - `internal/storage/paged/transaction_test.go`
+  - `internal/storage/paged/relation_test.go`
+5. Keep the suite drift-free between `internal/storage/memory` and `internal/storage/paged`; if a behavior mismatch appears, stop and resolve whether the paged or in-memory expectation is wrong before widening the migration.
+6. `golangci-lint` is now active again via the migrated `.golangci.yml`, so keep focused and repo-wide lint green while moving the tests.
 
-**Spec references:** `SPEC.md` §7, §9, `docs/storage.md` §5, §7, §9
+**Spec references:** `SPEC.md` §7, §8, §9, `docs/storage.md` §6, §7, §9, §10
 
-**Estimated parallelism available:** 1 stream (`T-127` is the first unblocked task)
+**Estimated parallelism available:** 1 stream (`T-128` is serial and is the first unblocked task)
 
 ---
 
@@ -75,7 +92,7 @@ _None._
 |-----------|--------|----------------|
 | M0 — Repo Ready | ✅ Complete | None |
 | M1 — SQL-92 Core | ✅ Complete | None (`T-010`, `T-011`, `T-012`, `T-013`, `T-020`, `T-021`, `T-022`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-040`, `T-041`, `T-045`, `T-050`, `T-051`, `T-060`, `T-061`, `T-062`, `T-063`, `T-070`, `T-071`, `T-072`, `T-073`, `T-080`, `T-081`, `T-082`, `T-090`, `T-091`, `T-092`, `T-093`, `T-094`, `T-095`, `T-096`, `T-097`, `T-098`, `T-099`, `T-100`, `T-101`, `T-102`, `T-110`, `T-111`, `T-112`, `T-113` complete) |
-| M2 — SQL-92 Full + Storage | 🟨 In progress | T-127 to T-171 (`T-120`, `T-121`, `T-122`, `T-123`, `T-124`, `T-125`, `T-126` complete) |
+| M2 — SQL-92 Full + Storage | 🟨 In progress | T-128 to T-171 (`T-120`, `T-121`, `T-122`, `T-123`, `T-124`, `T-125`, `T-126`, `T-127` complete) |
 | M3 — SQL:1999 | 🔲 Not started | T-200 to T-261 |
 | M4 — SQL:2003 + Wire | 🔲 Not started | T-300 to T-312 |
 | M5 — SQL:2008 | 🔲 Not started | T-350 to T-356 |
@@ -122,3 +139,4 @@ _None._
 | #030 | 2026-04-21 | Codex | Completed T-124 | Parallelized `T-124` with six bounded subagents, added restart-time WAL redo before paged-storage validation, extended WAL scan helpers plus recovery tests, passed focused and repo-wide tests/build, and advanced the baton to `T-125` |
 | #031 | 2026-04-21 | Codex | Completed T-125 | Parallelized `T-125` with bounded subagents, activated relation-local tuple version metadata (`xmin` / `xmax`), persisted page-0 version allocation, added version-aware paged-storage + recovery tests, passed focused and repo-wide tests/build, and advanced the baton to `T-126` |
 | #032 | 2026-04-21 | Codex | Completed T-126 | Finished relation-local begin/commit/rollback in `internal/storage/paged`, fixed redirect/version-floor reopen regressions, added transaction visibility/rollback durability tests, passed focused and repo-wide tests/build, and advanced the baton to `T-127` |
+| #033 | 2026-04-22 | Codex | Completed T-127 | Parallelized vacuum implementation/coverage/lint closeout, added `Relation.Vacuum()` plus paged reclamation tests, restored repo-wide `golangci-lint` validation, passed focused and repo-wide tests/build/lint, and advanced the baton to `T-128` |

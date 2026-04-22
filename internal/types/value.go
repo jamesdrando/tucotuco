@@ -49,6 +49,7 @@ func (r Row) Compare(other Row) (int, error) {
 // ValueKind identifies the concrete representation stored in a Value.
 type ValueKind uint8
 
+// ValueKind constants identify the concrete representations stored in a Value.
 const (
 	ValueKindNull ValueKind = iota
 	ValueKindBool

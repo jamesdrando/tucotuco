@@ -541,6 +541,62 @@ func (r *Relation) lookupLocked(handle storage.RowHandle) (storage.Row, error) {
 	return r.lookupHandle(handle, false)
 }
 
+// Vacuum compacts reclaimable in-page dead space while preserving logical row
+// handles, redirect roots, and the current relation metadata version counter.
+func (r *Relation) Vacuum() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return ErrClosed
+	}
+
+	metadata, err := r.readMetadata()
+	if err != nil {
+		return err
+	}
+
+	pageCount, err := r.store.PageCount()
+	if err != nil {
+		return err
+	}
+
+	insertHint := PageID(0)
+	for pageID := PageID(1); pageID < pageCount; pageID++ {
+		page, err := r.fetchHeapPage(pageID)
+		if err != nil {
+			return err
+		}
+
+		needsVacuum, err := page.heap.needsVacuum()
+		if err != nil {
+			r.releasePinnedHeapPage(page)
+			return err
+		}
+
+		if needsVacuum {
+			if err := r.mutateAndFinalizeHeapPage(page, func(heap *heapPage) error {
+				_, err := heap.vacuum()
+				return err
+			}); err != nil {
+				r.releasePinnedHeapPage(page)
+				return err
+			}
+		}
+
+		if insertHint == 0 && page.heap.canFit(tupleHeaderSize) {
+			insertHint = pageID
+		}
+		r.releasePinnedHeapPage(page)
+	}
+
+	if metadata.InsertHint == insertHint {
+		return nil
+	}
+	metadata.InsertHint = insertHint
+	return r.writeMetadata(metadata)
+}
+
 // Close flushes dirty pages and closes the relation file.
 func (r *Relation) Close() error {
 	r.mu.Lock()

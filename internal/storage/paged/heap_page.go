@@ -30,6 +30,12 @@ type heapPage struct {
 	header PageHeader
 }
 
+type retainedPayload struct {
+	slotIndex uint16
+	slot      slotEntry
+	payload   []byte
+}
+
 func newHeapPage(page *Page) (*heapPage, error) {
 	if page == nil {
 		return nil, ErrInvalidRelation
@@ -312,51 +318,6 @@ func (p *heapPage) installRedirect(slotIndex uint64, target storage.RowHandle) e
 	return p.flushHeader()
 }
 
-func (p *heapPage) markDead(slotIndex uint64) error {
-	if p == nil {
-		return ErrInvalidRelation
-	}
-	if err := p.syncHeader(); err != nil {
-		return err
-	}
-
-	slot, err := p.readSlot(slotIndex)
-	if err != nil {
-		return err
-	}
-	switch slot.Flags {
-	case slotFlagLive, slotFlagRedirect:
-	case slotFlagDead, slotFlagUnused:
-		return ErrRowNotFound
-	default:
-		return fmt.Errorf("paged: page %d slot %d has invalid flags 0x%x", p.page.ID(), slotIndex, slot.Flags)
-	}
-
-	if slot.Flags == slotFlagLive {
-		start, end, err := p.payloadBounds(slot)
-		if err != nil {
-			return err
-		}
-		header, err := decodeTupleHeader(p.page.data[start:end])
-		if err != nil {
-			return err
-		}
-		if !header.visible() {
-			return ErrRowNotFound
-		}
-		header.Flags = tupleFlagDeleted
-		header.ForwardPtr = 0
-		if err := encodeTupleHeader(p.page.data[start:start+tupleHeaderSize], header); err != nil {
-			return err
-		}
-	}
-
-	slot.Flags = slotFlagDead
-	p.writeSlot(uint16(slotIndex), slot)
-	p.noteDeadBytes(int(slot.Length))
-	return p.flushHeader()
-}
-
 func (p *heapPage) markTerminal(slotIndex uint64, version uint64) error {
 	if p == nil || version == 0 {
 		return ErrInvalidRelation
@@ -424,6 +385,150 @@ func (p *heapPage) noteDeadBytes(delta int) {
 		p.header.DeadBytes += uint16(delta)
 	}
 	p.header.Flags |= PageFlagHasDeadTuples
+}
+
+func (p *heapPage) needsVacuum() (bool, error) {
+	if p == nil {
+		return false, ErrInvalidRelation
+	}
+	if err := p.syncHeader(); err != nil {
+		return false, err
+	}
+	if p.header.DeadBytes > 0 {
+		return true, nil
+	}
+
+	for slotIndex := uint64(0); slotIndex < uint64(p.header.SlotCount); slotIndex++ {
+		slot, err := p.readSlot(slotIndex)
+		if err != nil {
+			return false, err
+		}
+
+		switch slot.Flags {
+		case slotFlagLive:
+			start, end, err := p.payloadBounds(slot)
+			if err != nil {
+				return false, err
+			}
+			header, err := decodeTupleHeader(p.page.data[start:end])
+			if err != nil {
+				return false, err
+			}
+			if !header.visible() {
+				return true, nil
+			}
+		case slotFlagDead, slotFlagUnused:
+			if slot.Offset != 0 || slot.Length != 0 {
+				return true, nil
+			}
+		case slotFlagRedirect:
+			continue
+		default:
+			return false, fmt.Errorf("paged: page %d slot %d has invalid flags 0x%x", p.page.ID(), slotIndex, slot.Flags)
+		}
+	}
+
+	return false, nil
+}
+
+func (p *heapPage) vacuum() (bool, error) {
+	if p == nil {
+		return false, ErrInvalidRelation
+	}
+	if err := p.syncHeader(); err != nil {
+		return false, err
+	}
+
+	survivors := make([]retainedPayload, 0, p.header.SlotCount)
+	modified := p.header.DeadBytes > 0
+	hasRedirects := false
+
+	for slotIndex := uint16(0); slotIndex < p.header.SlotCount; slotIndex++ {
+		slot, err := p.readSlot(uint64(slotIndex))
+		if err != nil {
+			return false, err
+		}
+
+		switch slot.Flags {
+		case slotFlagLive:
+			start, end, err := p.payloadBounds(slot)
+			if err != nil {
+				return false, err
+			}
+			header, err := decodeTupleHeader(p.page.data[start:end])
+			if err != nil {
+				return false, err
+			}
+			if !header.visible() {
+				if slot.Offset != 0 || slot.Length != 0 || slot.Flags != slotFlagDead {
+					slot.Offset = 0
+					slot.Length = 0
+					slot.Flags = slotFlagDead
+					p.writeSlot(slotIndex, slot)
+					modified = true
+				}
+				continue
+			}
+
+			survivors = append(survivors, retainedPayload{
+				slotIndex: slotIndex,
+				slot:      slot,
+				payload:   append([]byte(nil), p.page.data[start:end]...),
+			})
+		case slotFlagRedirect:
+			start, end, err := p.payloadBounds(slot)
+			if err != nil {
+				return false, err
+			}
+			hasRedirects = true
+			survivors = append(survivors, retainedPayload{
+				slotIndex: slotIndex,
+				slot:      slot,
+				payload:   append([]byte(nil), p.page.data[start:end]...),
+			})
+		case slotFlagDead:
+			if slot.Offset != 0 || slot.Length != 0 {
+				slot.Offset = 0
+				slot.Length = 0
+				p.writeSlot(slotIndex, slot)
+				modified = true
+			}
+		case slotFlagUnused:
+			if slot.Offset != 0 || slot.Length != 0 {
+				slot.Offset = 0
+				slot.Length = 0
+				p.writeSlot(slotIndex, slot)
+				modified = true
+			}
+		default:
+			return false, fmt.Errorf("paged: page %d slot %d has invalid flags 0x%x", p.page.ID(), slotIndex, slot.Flags)
+		}
+	}
+
+	flags := p.header.Flags &^ (PageFlagHasDeadTuples | PageFlagHasRedirects)
+	if hasRedirects {
+		flags |= PageFlagHasRedirects
+	}
+	if !modified && p.header.Flags == flags {
+		return false, nil
+	}
+
+	for index := int(p.header.Lower); index < int(p.header.Special); index++ {
+		p.page.data[index] = 0
+	}
+
+	upper := int(p.header.Special)
+	for _, survivor := range survivors {
+		upper -= len(survivor.payload)
+		copy(p.page.data[upper:upper+len(survivor.payload)], survivor.payload)
+		survivor.slot.Offset = uint16(upper)
+		p.writeSlot(survivor.slotIndex, survivor.slot)
+	}
+
+	p.header.Upper = uint16(upper)
+	p.header.DeadBytes = 0
+	p.header.Flags = flags
+	return true, p.flushHeader()
 }
 
 func writeRedirectPayload(dst []byte, target storage.RowHandle) {

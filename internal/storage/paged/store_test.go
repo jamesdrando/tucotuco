@@ -1,7 +1,6 @@
 package paged
 
 import (
-	"errors"
 	"sync"
 	"testing"
 )
@@ -115,31 +114,4 @@ func (s *memoryStore) writeCount(pageID PageID) int {
 	defer s.mu.Unlock()
 
 	return s.writes[pageID]
-}
-
-func (s *memoryStore) corruptPage(pageID PageID) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if page, ok := s.pages[pageID]; ok {
-		page[0] ^= 0xff
-		s.pages[pageID] = page
-	}
-}
-
-func (s *memoryStore) removePage(pageID PageID) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	delete(s.pages, pageID)
-}
-
-func (s *memoryStore) closedErr() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return errors.New("closed")
-	}
-	return nil
 }

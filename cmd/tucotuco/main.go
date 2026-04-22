@@ -36,23 +36,30 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	dbPath := fs.String("db", defaultCatalogPath, "catalog path")
 	filePath := fs.String("file", "", "SQL script path or - for stdin")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "Usage: tucotuco [--db path] [--file path|-]\n")
-		fs.PrintDefaults()
+		_ = printUsage(stderr, fs)
 	}
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fs.Usage()
+			if usageErr := printUsage(stderr, fs); usageErr != nil {
+				return 1
+			}
 			return 0
 		}
-		fs.Usage()
-		fmt.Fprintln(stderr, err)
+		if usageErr := printUsage(stderr, fs); usageErr != nil {
+			return 1
+		}
+		if printErr := writeLine(stderr, err); printErr != nil {
+			return 1
+		}
 		return 2
 	}
 
 	db, err := embed.Open(*dbPath)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		if printErr := writeLine(stderr, err); printErr != nil {
+			return 1
+		}
 		return 1
 	}
 
@@ -74,7 +81,9 @@ func runScriptSource(runner *script.Runner, path string, stdin io.Reader, stdout
 		content, err = os.ReadFile(path)
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		if printErr := writeLine(stderr, err); printErr != nil {
+			return 1
+		}
 		return 1
 	}
 
@@ -94,7 +103,9 @@ func runRepl(runner *script.Runner, stdin io.Reader, stdout, stderr io.Writer) i
 			if errors.Is(err, io.EOF) {
 				return 0
 			}
-			fmt.Fprintln(stderr, err)
+			if printErr := writeLine(stderr, err); printErr != nil {
+				return 1
+			}
 			return 1
 		}
 	}
@@ -103,4 +114,17 @@ func runRepl(runner *script.Runner, stdin io.Reader, stdout, stderr io.Writer) i
 func runSQLText(runner *script.Runner, text string, stdout, stderr io.Writer) int {
 	result, err := runner.Run(text)
 	return renderScriptRun(result, err, stdout, stderr)
+}
+
+func printUsage(w io.Writer, fs *flag.FlagSet) error {
+	if _, err := fmt.Fprintf(w, "Usage: tucotuco [--db path] [--file path|-]\n"); err != nil {
+		return err
+	}
+	fs.PrintDefaults()
+	return nil
+}
+
+func writeLine(w io.Writer, args ...any) error {
+	_, err := fmt.Fprintln(w, args...)
+	return err
 }

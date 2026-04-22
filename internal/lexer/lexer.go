@@ -528,7 +528,7 @@ func (l *Lexer) skipWhitespace() {
 		case '\n', '\r':
 			l.advanceRune()
 		default:
-			if r, size := l.peekRune(); unicode.IsSpace(r) && !(r == utf8.RuneError && size == 1) {
+			if r, size := l.peekRune(); unicode.IsSpace(r) && (r != utf8.RuneError || size != 1) {
 				l.advanceRune()
 				continue
 			}
@@ -755,12 +755,12 @@ func decodeUnicodeEscapes(value string, escape rune) (string, error) {
 		if next == '+' {
 			start := index + size + nextSize
 			if start+6 > len(value) {
-				return "", fmt.Errorf("Unicode escape requires six hexadecimal digits after +")
+				return "", fmt.Errorf("unicode escape requires six hexadecimal digits after +")
 			}
 
 			raw := value[start : start+6]
 			if !isHexString(raw) {
-				return "", fmt.Errorf("Unicode escape requires six hexadecimal digits after +")
+				return "", fmt.Errorf("unicode escape requires six hexadecimal digits after +")
 			}
 
 			codepoint, err := strconv.ParseInt(raw, 16, 32)
@@ -775,12 +775,12 @@ func decodeUnicodeEscapes(value string, escape rune) (string, error) {
 
 		start := index + size
 		if start+4 > len(value) {
-			return "", fmt.Errorf("Unicode escape requires four hexadecimal digits")
+			return "", fmt.Errorf("unicode escape requires four hexadecimal digits")
 		}
 
 		raw := value[start : start+4]
 		if !isHexString(raw) {
-			return "", fmt.Errorf("Unicode escape requires four hexadecimal digits")
+			return "", fmt.Errorf("unicode escape requires four hexadecimal digits")
 		}
 
 		codepoint, err := strconv.ParseInt(raw, 16, 32)

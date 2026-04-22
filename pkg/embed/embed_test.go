@@ -105,7 +105,7 @@ func TestExecAndQueryEndToEnd(t *testing.T) {
 	if _, err := db.Query("SELECT * FROM widgets"); err == nil {
 		t.Fatal("Query(dropped table) error = nil, want SQLError")
 	} else {
-		assertSQLError(t, err)
+		_ = assertSQLError(t, err)
 	}
 }
 

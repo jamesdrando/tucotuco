@@ -227,7 +227,7 @@
 
 - [x] **T-126** — Transaction manager: begin/commit/rollback with MVCC `[serial]` `depends: T-125`
 
-- [ ] **T-127** — Vacuum / dead tuple reclamation `[parallel-safe]` `depends: T-126`
+- [x] **T-127** — Vacuum / dead tuple reclamation `[parallel-safe]` `depends: T-126`
 
 - [ ] **T-128** — Migrate in-memory storage tests to paged storage `[serial]` `depends: T-126`
 

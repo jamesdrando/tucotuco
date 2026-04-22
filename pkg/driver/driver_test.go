@@ -15,14 +15,14 @@ func TestRegistrationAndOpen(t *testing.T) {
 	t.Parallel()
 
 	db := mustOpenSQLDB(t, filepath.Join(t.TempDir(), "catalog.json"))
-	defer db.Close()
+	defer closeSQLDB(t, db)
 }
 
 func TestExecAndQueryHappyPath(t *testing.T) {
 	t.Parallel()
 
 	db := mustOpenSQLDB(t, filepath.Join(t.TempDir(), "catalog.json"))
-	defer db.Close()
+	defer closeSQLDB(t, db)
 
 	if _, err := db.Exec("CREATE TABLE widgets (id INTEGER NOT NULL, name VARCHAR(20))"); err != nil {
 		t.Fatalf("Exec(CREATE TABLE) error = %v", err)
@@ -40,7 +40,7 @@ func TestExecAndQueryHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Query(SELECT) error = %v", err)
 	}
-	defer rows.Close()
+	defer closeSQLRows(t, rows)
 
 	if !rows.Next() {
 		t.Fatal("rows.Next() = false, want true")
@@ -66,7 +66,7 @@ func TestExplicitTxCommitAndRollback(t *testing.T) {
 	t.Parallel()
 
 	db := mustOpenSQLDB(t, filepath.Join(t.TempDir(), "catalog.json"))
-	defer db.Close()
+	defer closeSQLDB(t, db)
 
 	if _, err := db.Exec("CREATE TABLE widgets (id INTEGER NOT NULL, name VARCHAR(20))"); err != nil {
 		t.Fatalf("Exec(CREATE TABLE) error = %v", err)
@@ -115,7 +115,7 @@ func TestBeginTxRejectsNonDefaultOptions(t *testing.T) {
 	t.Parallel()
 
 	db := mustOpenSQLDB(t, filepath.Join(t.TempDir(), "catalog.json"))
-	defer db.Close()
+	defer closeSQLDB(t, db)
 
 	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
 	if err == nil {
@@ -138,7 +138,7 @@ func TestPrepareCompatibilityShim(t *testing.T) {
 	t.Parallel()
 
 	db := mustOpenSQLDB(t, filepath.Join(t.TempDir(), "catalog.json"))
-	defer db.Close()
+	defer closeSQLDB(t, db)
 
 	if _, err := db.Exec("CREATE TABLE widgets (id INTEGER NOT NULL, name VARCHAR(20))"); err != nil {
 		t.Fatalf("Exec(CREATE TABLE) error = %v", err)
@@ -148,7 +148,7 @@ func TestPrepareCompatibilityShim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare(INSERT) error = %v", err)
 	}
-	defer stmt.Close()
+	defer closeSQLStmt(t, stmt)
 
 	result, err := stmt.Exec()
 	if err != nil {
@@ -162,13 +162,13 @@ func TestPrepareCompatibilityShim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare(SELECT) error = %v", err)
 	}
-	defer stmt.Close()
+	defer closeSQLStmt(t, stmt)
 
 	rows, err := stmt.Query()
 	if err != nil {
 		t.Fatalf("stmt.Query() error = %v", err)
 	}
-	defer rows.Close()
+	defer closeSQLRows(t, rows)
 
 	if !rows.Next() {
 		t.Fatal("stmt.Query rows.Next() = false, want true")
@@ -190,7 +190,7 @@ func TestDatabaseSQLErrorPropagation(t *testing.T) {
 	t.Parallel()
 
 	db := mustOpenSQLDB(t, filepath.Join(t.TempDir(), "catalog.json"))
-	defer db.Close()
+	defer closeSQLDB(t, db)
 
 	if _, err := db.Query("SELECT 1 ORDER BY 1"); err == nil {
 		t.Fatal("Query(unsupported shape) error = nil, want SQLError")
@@ -203,7 +203,7 @@ func TestUnsupportedBindParameters(t *testing.T) {
 	t.Parallel()
 
 	db := mustOpenSQLDB(t, filepath.Join(t.TempDir(), "catalog.json"))
-	defer db.Close()
+	defer closeSQLDB(t, db)
 
 	if _, err := db.Exec("CREATE TABLE widgets (id INTEGER NOT NULL)"); err != nil {
 		t.Fatalf("Exec(CREATE TABLE) error = %v", err)
@@ -237,6 +237,30 @@ func mustOpenSQLDB(t *testing.T, path string) *sql.DB {
 	}
 
 	return db
+}
+
+func closeSQLDB(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	if err := db.Close(); err != nil {
+		t.Errorf("db.Close() error = %v", err)
+	}
+}
+
+func closeSQLStmt(t *testing.T, stmt *sql.Stmt) {
+	t.Helper()
+
+	if err := stmt.Close(); err != nil {
+		t.Errorf("stmt.Close() error = %v", err)
+	}
+}
+
+func closeSQLRows(t *testing.T, rows *sql.Rows) {
+	t.Helper()
+
+	if err := rows.Close(); err != nil {
+		t.Errorf("rows.Close() error = %v", err)
+	}
 }
 
 func mustRowsAffected(t *testing.T, result sql.Result) int64 {

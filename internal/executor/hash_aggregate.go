@@ -752,7 +752,7 @@ func writeAggregateValueSignature(builder *strings.Builder, value sqltypes.Value
 		}
 		builder.WriteString(");")
 	default:
-		builder.WriteString(fmt.Sprintf("%v;", value.Raw()))
+		fmt.Fprintf(builder, "%v;", value.Raw())
 	}
 }
 

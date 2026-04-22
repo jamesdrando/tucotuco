@@ -25,18 +25,24 @@ type commandOutput struct {
 func renderScriptRun(result script.RunResult, err error, stdout, stderr io.Writer) int {
 	for _, statement := range result.Statements {
 		if statement.Error != "" {
-			fmt.Fprintln(stderr, statement.Error)
+			if printErr := writeLine(stderr, statement.Error); printErr != nil {
+				return 1
+			}
 			return 1
 		}
 
 		if err := renderStatement(stdout, statement); err != nil {
-			fmt.Fprintln(stderr, err)
+			if printErr := writeLine(stderr, err); printErr != nil {
+				return 1
+			}
 			return 1
 		}
 	}
 
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		if printErr := writeLine(stderr, err); printErr != nil {
+			return 1
+		}
 		return 1
 	}
 

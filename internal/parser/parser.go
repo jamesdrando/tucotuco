@@ -696,8 +696,8 @@ func (p *Parser) parseUpdateAssignment() *UpdateAssignment {
 	if p.matchPunctuation("(") {
 		columns, stop := p.parseParenthesizedIdentifierList("assignment target list")
 		stmt.Columns = columns
-		stmt.Span.Start = firstIdentifierPos(columns)
-		stmt.Span.Stop = stop
+		stmt.Start = firstIdentifierPos(columns)
+		stmt.Stop = stop
 
 		p.expectOperator("=")
 		values, stop := p.parseParenthesizedExprList("assignment value list")
@@ -713,8 +713,8 @@ func (p *Parser) parseUpdateAssignment() *UpdateAssignment {
 	}
 
 	stmt.Columns = []*Identifier{column}
-	stmt.Span.Start = column.Pos()
-	stmt.Span.Stop = column.End()
+	stmt.Start = column.Pos()
+	stmt.Stop = column.End()
 
 	p.expectOperator("=")
 	value := p.parseExpr()

@@ -13,9 +13,10 @@ import (
 	"github.com/jamesdrando/tucotuco/internal/types"
 )
 
+const tupleVersion uint16 = 1
+
 const (
-	tupleVersion    uint16 = 1
-	tupleHeaderSize        = 44
+	tupleHeaderSize = 44
 
 	forwardPtrSlotBits = 16
 	forwardPtrSlotMask = (1 << forwardPtrSlotBits) - 1
@@ -42,14 +43,6 @@ type tupleHeader struct {
 
 func (h tupleHeader) visible() bool {
 	return h.Flags == tupleFlagLive && h.Xmax == 0 && h.ForwardPtr == 0
-}
-
-func (h tupleHeader) replacement() bool {
-	return h.Flags == tupleFlagDeleted && h.Xmax != 0 && h.ForwardPtr != 0
-}
-
-func (h tupleHeader) deleted() bool {
-	return h.Flags == tupleFlagDeleted && h.Xmax != 0 && h.ForwardPtr == 0
 }
 
 func decodeTupleHeader(tuple []byte) (tupleHeader, error) {
@@ -227,21 +220,6 @@ func encodeForwardPtr(handle storage.RowHandle) (uint64, error) {
 	}
 
 	return (handle.Page << forwardPtrSlotBits) | handle.Slot, nil
-}
-
-func decodeForwardPtr(ptr uint64) (storage.RowHandle, error) {
-	if ptr == 0 {
-		return storage.RowHandle{}, ErrRowNotFound
-	}
-
-	handle := storage.RowHandle{
-		Page: ptr >> forwardPtrSlotBits,
-		Slot: ptr & forwardPtrSlotMask,
-	}
-	if !handle.Valid() || handle.Page == 0 {
-		return storage.RowHandle{}, fmt.Errorf("paged: invalid packed forward pointer 0x%x", ptr)
-	}
-	return handle, nil
 }
 
 func encodeColumnValue(desc types.TypeDesc, value types.Value) ([]byte, error) {

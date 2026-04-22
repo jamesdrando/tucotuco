@@ -494,13 +494,13 @@ func toDriverValue(value any) (sqldriver.Value, error) {
 
 func parseSingleLengthType(typ string) (string, int64, bool) {
 	open := strings.IndexByte(typ, '(')
-	close := strings.LastIndexByte(typ, ')')
-	if open < 0 || close < 0 || close <= open+1 {
+	closeIndex := strings.LastIndexByte(typ, ')')
+	if open < 0 || closeIndex < 0 || closeIndex <= open+1 {
 		return "", 0, false
 	}
 
 	var base = strings.TrimSpace(typ[:open])
-	content := strings.TrimSpace(typ[open+1 : close])
+	content := strings.TrimSpace(typ[open+1 : closeIndex])
 	if strings.Contains(content, ",") {
 		return base, 0, false
 	}
@@ -516,12 +516,12 @@ func parseSingleLengthType(typ string) (string, int64, bool) {
 
 func parsePrecisionScaleType(typ string) (int64, int64, bool) {
 	open := strings.IndexByte(typ, '(')
-	close := strings.LastIndexByte(typ, ')')
-	if open < 0 || close < 0 || close <= open+1 {
+	closeIndex := strings.LastIndexByte(typ, ')')
+	if open < 0 || closeIndex < 0 || closeIndex <= open+1 {
 		return 0, 0, false
 	}
 
-	content := strings.TrimSpace(typ[open+1 : close])
+	content := strings.TrimSpace(typ[open+1 : closeIndex])
 	parts := strings.Split(content, ",")
 	if len(parts) != 2 {
 		return 0, 0, false

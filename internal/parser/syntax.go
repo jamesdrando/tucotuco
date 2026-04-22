@@ -301,6 +301,8 @@ type DeleteStmt struct {
 // ConstraintKind enumerates the CREATE TABLE constraint forms used by the CST.
 type ConstraintKind string
 
+// ConstraintKind constants enumerate the CREATE TABLE constraint forms used by
+// the CST.
 const (
 	ConstraintKindNull       ConstraintKind = "NULL"
 	ConstraintKindNotNull    ConstraintKind = "NOT NULL"

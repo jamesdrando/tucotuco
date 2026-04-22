@@ -3,6 +3,7 @@ package executor
 import (
 	"errors"
 	"io"
+	"math"
 	"testing"
 
 	"github.com/jamesdrando/tucotuco/internal/types"
@@ -211,7 +212,7 @@ func TestHashAggregateGroupsSignedZeroTogether(t *testing.T) {
 	child := &hashAggregateTestOperator{
 		nextResults: hashAggregateResults(
 			NewRow(types.Float64Value(0.0)),
-			NewRow(types.Float64Value(-0.0)),
+			NewRow(types.Float64Value(math.Copysign(0, -1))),
 		),
 	}
 	agg := NewHashAggregate(

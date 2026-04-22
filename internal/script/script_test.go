@@ -9,9 +9,9 @@ import (
 )
 
 type stubEngine struct {
-	calls   []string
-	query   func(string) (*embed.ResultSet, error)
-	exec    func(string) (embed.CommandResult, error)
+	calls []string
+	query func(string) (*embed.ResultSet, error)
+	exec  func(string) (embed.CommandResult, error)
 }
 
 func (s *stubEngine) Query(sql string) (*embed.ResultSet, error) {
@@ -57,13 +57,13 @@ func TestIsSelectStatement(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]bool{
-		"SELECT 1":                          true,
-		"  /* note */ SELECT 1":             true,
-		"select 1":                          true,
-		"INSERT INTO t VALUES (1)":          false,
-		"-- comment\nUPDATE t SET a = 1":    false,
-		"/* comment */ DELETE FROM t":       false,
-		"":                                  false,
+		"SELECT 1":                       true,
+		"  /* note */ SELECT 1":          true,
+		"select 1":                       true,
+		"INSERT INTO t VALUES (1)":       false,
+		"-- comment\nUPDATE t SET a = 1": false,
+		"/* comment */ DELETE FROM t":    false,
+		"":                               false,
 	}
 
 	for input, want := range cases {
@@ -82,13 +82,13 @@ func TestRunnerRoutesAndReturnsStructuredResults(t *testing.T) {
 	t.Parallel()
 
 	engine := &stubEngine{
-		query: func(sql string) (*embed.ResultSet, error) {
+		query: func(_ string) (*embed.ResultSet, error) {
 			return &embed.ResultSet{
 				Columns: []embed.Column{{Name: "n", Type: "INTEGER"}},
 				Rows:    [][]any{{int64(1)}},
 			}, nil
 		},
-		exec: func(sql string) (embed.CommandResult, error) {
+		exec: func(_ string) (embed.CommandResult, error) {
 			return embed.CommandResult{RowsAffected: 3}, nil
 		},
 	}
@@ -127,7 +127,7 @@ func TestRunnerStopsAtFirstError(t *testing.T) {
 	t.Parallel()
 
 	engine := &stubEngine{
-		query: func(sql string) (*embed.ResultSet, error) {
+		query: func(_ string) (*embed.ResultSet, error) {
 			return nil, errors.New("boom")
 		},
 	}
