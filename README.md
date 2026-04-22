@@ -1,4 +1,4 @@
-![Alt text](tucotuco.png)
+![tucotuco](tucotuco.png)
 
 # tucotuco
 SQL in pure Go
