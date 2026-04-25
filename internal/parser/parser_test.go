@@ -171,7 +171,9 @@ func TestParseExpr(t *testing.T) {
 		{name: "identifier lowercased", input: "CustomerID", want: "id(customerid)"},
 		{name: "quoted identifier preserved", input: `"CustomerID"`, want: `qid("CustomerID")`},
 		{name: "qualified name", input: "sales.orders", want: "name(sales.orders)"},
+		{name: "three part qualified name", input: "sales.orders.id", want: "name(sales.orders.id)"},
 		{name: "qualified star", input: "orders.*", want: "star(name(orders).*)"},
+		{name: "schema qualified star", input: "sales.orders.*", want: "star(name(sales.orders).*)"},
 		{name: "unary and multiplicative", input: "-a * b", want: "((- id(a)) * id(b))"},
 		{name: "arithmetic precedence", input: "1 + 2 * 3", want: "(int(1) + (int(2) * int(3)))"},
 		{name: "concatenation", input: "customer_id || '-' || order_id", want: "((id(customer_id) || string(\"-\")) || id(order_id))"},
@@ -417,6 +419,26 @@ func TestParseScriptSelectStatements(t *testing.T) {
 			input: "SELECT (SELECT o.customer_id), EXISTS (SELECT 1 FROM customers c WHERE c.id = o.id), o.id FROM orders AS o",
 			want:  "script([select([item(subquery(select([item(name(o.customer_id))]))), item(exists(select([item(int(1))] FROM [from(name(customers) AS id(c))] WHERE (name(c.id) = name(o.id))))), item(name(o.id))] FROM [from(name(orders) AS id(o))])])",
 		},
+		{
+			name:  "schema table column references",
+			input: "SELECT sales.orders.id, sales.orders.* FROM sales.orders",
+			want:  "script([select([item(name(sales.orders.id)), item(star(name(sales.orders).*))] FROM [from(name(sales.orders))])])",
+		},
+		{
+			name:  "explain select",
+			input: "EXPLAIN SELECT id FROM orders",
+			want:  "script([explain(select([item(id(id))] FROM [from(name(orders))]))])",
+		},
+		{
+			name:  "explain analyze select",
+			input: "EXPLAIN ANALYZE SELECT id FROM orders",
+			want:  "script([explain analyze(select([item(id(id))] FROM [from(name(orders))]))])",
+		},
+		{
+			name:  "explain parenthesized set operation",
+			input: "EXPLAIN (SELECT 1 UNION ALL SELECT 2)",
+			want:  "script([explain(setop(UNION ALL, select([item(int(1))]), select([item(int(2))])))])",
+		},
 	}
 
 	for _, tc := range cases {
@@ -511,6 +533,31 @@ func TestParseScriptDDLStatements(t *testing.T) {
 			input: "DROP TABLE orders",
 			want:  "script([drop table(name(orders))])",
 		},
+		{
+			name:  "create view",
+			input: "CREATE VIEW sales.open_orders (order_id, total_due) AS SELECT id, total FROM orders WITH LOCAL CHECK OPTION",
+			want:  "script([create view(name(sales.open_orders), columns=[id(order_id), id(total_due)], query=select([item(id(id)), item(id(total))] FROM [from(name(orders))]), check=LOCAL)])",
+		},
+		{
+			name:  "drop view",
+			input: "DROP VIEW sales.open_orders",
+			want:  "script([drop view(name(sales.open_orders))])",
+		},
+		{
+			name:  "create schema",
+			input: "CREATE SCHEMA sales",
+			want:  "script([create schema(id(sales))])",
+		},
+		{
+			name:  "drop schema restrict",
+			input: "DROP SCHEMA sales RESTRICT",
+			want:  "script([drop schema(id(sales) RESTRICT)])",
+		},
+		{
+			name:  "drop schema cascade",
+			input: "DROP SCHEMA sales CASCADE",
+			want:  "script([drop schema(id(sales) CASCADE)])",
+		},
 	}
 
 	for _, tc := range cases {
@@ -603,7 +650,7 @@ func TestParseScriptRecoversAfterBadStatement(t *testing.T) {
 		t.Fatalf("renderNode(script) = %s, want %s", got, want)
 	}
 
-	if got, want := errs[0].Error(), `ERROR [SQLSTATE 42601] at 1:8 (offset 7): expected BEGIN, COMMIT, ROLLBACK, SELECT, INSERT, UPDATE, DELETE, CREATE, or DROP, found identifier "UPSERT"`; got != want {
+	if got, want := errs[0].Error(), `ERROR [SQLSTATE 42601] at 1:8 (offset 7): expected BEGIN, COMMIT, ROLLBACK, SELECT, EXPLAIN, INSERT, UPDATE, DELETE, CREATE, or DROP, found identifier "UPSERT"`; got != want {
 		t.Fatalf("Error() = %q, want %q", got, want)
 	}
 }
@@ -620,7 +667,7 @@ func TestParseScriptRecoversAfterBadStatementWithEmptySeparators(t *testing.T) {
 		t.Fatalf("renderNode(script) = %s, want %s", got, want)
 	}
 
-	if got, want := errs[0].Error(), `ERROR [SQLSTATE 42601] at 1:9 (offset 8): expected BEGIN, COMMIT, ROLLBACK, SELECT, INSERT, UPDATE, DELETE, CREATE, or DROP, found identifier "UPSERT"`; got != want {
+	if got, want := errs[0].Error(), `ERROR [SQLSTATE 42601] at 1:9 (offset 8): expected BEGIN, COMMIT, ROLLBACK, SELECT, EXPLAIN, INSERT, UPDATE, DELETE, CREATE, or DROP, found identifier "UPSERT"`; got != want {
 		t.Fatalf("Error() = %q, want %q", got, want)
 	}
 }
@@ -838,6 +885,12 @@ func renderNode(node Node) string {
 			operator += " " + node.SetQuantifier
 		}
 		return fmt.Sprintf("setop(%s, %s, %s)", operator, renderNode(node.Left), renderNode(node.Right))
+	case *ExplainStmt:
+		prefix := "explain"
+		if node.Analyze {
+			prefix = "explain analyze"
+		}
+		return fmt.Sprintf("%s(%s)", prefix, renderNode(node.Query))
 	case *SelectItem:
 		if node.Alias != nil {
 			return fmt.Sprintf("item(%s AS %s)", renderNode(node.Expr), renderNode(node.Alias))
@@ -945,6 +998,25 @@ func renderNode(node Node) string {
 		return fmt.Sprintf("create table(%s)", strings.Join(parts, ", "))
 	case *DropTableStmt:
 		return fmt.Sprintf("drop table(%s)", renderNode(node.Name))
+	case *CreateViewStmt:
+		parts := []string{renderNode(node.Name)}
+		if len(node.Columns) > 0 {
+			parts = append(parts, fmt.Sprintf("columns=[%s]", renderIdentifierSlice(node.Columns)))
+		}
+		parts = append(parts, "query="+renderNode(node.Query))
+		if node.CheckOption != "" {
+			parts = append(parts, "check="+node.CheckOption)
+		}
+		return fmt.Sprintf("create view(%s)", strings.Join(parts, ", "))
+	case *DropViewStmt:
+		return fmt.Sprintf("drop view(%s)", renderNode(node.Name))
+	case *CreateSchemaStmt:
+		return fmt.Sprintf("create schema(%s)", renderNode(node.Name))
+	case *DropSchemaStmt:
+		if node.Behavior != "" {
+			return fmt.Sprintf("drop schema(%s %s)", renderNode(node.Name), node.Behavior)
+		}
+		return fmt.Sprintf("drop schema(%s)", renderNode(node.Name))
 	case *BeginStmt:
 		if node.Mode == "" {
 			return "begin"

@@ -4,8 +4,13 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jamesdrando/tucotuco/internal/catalog"
+	"github.com/jamesdrando/tucotuco/internal/storage"
+	"github.com/jamesdrando/tucotuco/internal/types"
 )
 
 func TestOpenBootstrapsPublicSchemaAndPersistsCatalogMetadata(t *testing.T) {
@@ -35,6 +40,123 @@ func TestOpenBootstrapsPublicSchemaAndPersistsCatalogMetadata(t *testing.T) {
 	}
 	if got := len(result.Rows); got != 0 {
 		t.Fatalf("len(result.Rows) = %d, want 0", got)
+	}
+}
+
+func TestSchemaDDLEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "catalog.json")
+	db := mustOpenDB(t, path)
+
+	if _, err := db.Exec("CREATE SCHEMA tenant"); err != nil {
+		t.Fatalf("Exec(CREATE SCHEMA) error = %v", err)
+	}
+	if _, err := db.Exec("CREATE TABLE tenant.widgets (id INTEGER)"); err != nil {
+		t.Fatalf("Exec(CREATE TABLE tenant.widgets) error = %v", err)
+	}
+
+	reopened := mustOpenDB(t, path)
+	result, err := reopened.Query("SELECT * FROM tenant.widgets")
+	if err != nil {
+		t.Fatalf("Query(reopened tenant.widgets) error = %v", err)
+	}
+	if got, want := len(result.Columns), 1; got != want {
+		t.Fatalf("len(result.Columns) = %d, want %d", got, want)
+	}
+	if got, want := result.Columns[0].Name, "id"; got != want {
+		t.Fatalf("result.Columns[0].Name = %q, want %q", got, want)
+	}
+
+	if _, err := reopened.Exec("DROP SCHEMA tenant"); !errors.Is(err, catalog.ErrSchemaNotEmpty) {
+		t.Fatalf("Exec(DROP SCHEMA non-empty) error = %v, want %v", err, catalog.ErrSchemaNotEmpty)
+	}
+	if _, err := reopened.Exec("DROP TABLE tenant.widgets"); err != nil {
+		t.Fatalf("Exec(DROP TABLE tenant.widgets) error = %v", err)
+	}
+	if _, err := reopened.Exec("DROP SCHEMA tenant"); err != nil {
+		t.Fatalf("Exec(DROP SCHEMA) error = %v", err)
+	}
+	if err := reopened.cat.CreateTable(&catalog.TableDescriptor{
+		ID:      storage.TableID{Schema: "tenant", Name: "after_drop"},
+		Columns: []catalog.ColumnDescriptor{{Name: "id", Type: types.TypeDesc{Kind: types.TypeKindInteger}}},
+	}); !errors.Is(err, catalog.ErrSchemaNotFound) {
+		t.Fatalf("CreateTable() after DROP SCHEMA error = %v, want %v", err, catalog.ErrSchemaNotFound)
+	}
+}
+
+func TestViewDDLEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "catalog.json")
+	db := mustOpenDB(t, path)
+
+	if _, err := db.Exec("CREATE SCHEMA tenant"); err != nil {
+		t.Fatalf("Exec(CREATE SCHEMA) error = %v", err)
+	}
+	if _, err := db.Exec("CREATE TABLE tenant.widgets (id INTEGER NOT NULL, name VARCHAR(20), active BOOLEAN)"); err != nil {
+		t.Fatalf("Exec(CREATE TABLE) error = %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO tenant.widgets VALUES (1, 'alice', TRUE)"); err != nil {
+		t.Fatalf("Exec(INSERT alice) error = %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO tenant.widgets VALUES (2, 'bob', FALSE)"); err != nil {
+		t.Fatalf("Exec(INSERT bob) error = %v", err)
+	}
+	if _, err := db.Exec("CREATE VIEW tenant.active_widget_names (widget_id, widget_name) AS SELECT id, name FROM tenant.widgets WHERE active = TRUE WITH CASCADED CHECK OPTION"); err != nil {
+		t.Fatalf("Exec(CREATE VIEW) error = %v", err)
+	}
+
+	result, err := db.Query("SELECT widget_id, widget_name FROM tenant.active_widget_names")
+	if err != nil {
+		t.Fatalf("Query(view) error = %v", err)
+	}
+	if got, want := result.Rows, [][]any{{int32(1), "alice"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("view rows = %#v, want %#v", got, want)
+	}
+	if got, want := result.Columns[0].Name, "widget_id"; got != want {
+		t.Fatalf("view column name = %q, want %q", got, want)
+	}
+
+	reopened := mustOpenDB(t, path)
+	reopened.store = db.store
+	reopenedResult, err := reopened.Query("SELECT widget_name FROM tenant.active_widget_names")
+	if err != nil {
+		t.Fatalf("Query(reopened view) error = %v", err)
+	}
+	if got, want := reopenedResult.Rows, [][]any{{"alice"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("reopened view rows = %#v, want %#v", got, want)
+	}
+
+	_, err = reopened.Exec("INSERT INTO tenant.active_widget_names VALUES (3, 'carol')")
+	sqlErr := assertSQLError(t, err)
+	if got, want := sqlErr.Diagnostics[0].Message, "writes to views are not supported"; got != want {
+		t.Fatalf("view write diagnostic = %q, want %q", got, want)
+	}
+	for _, sql := range []string{
+		"INSERT INTO tenant.active_widget_names (widget_name) VALUES ('carol')",
+		"INSERT INTO tenant.active_widget_names DEFAULT VALUES",
+		"UPDATE tenant.active_widget_names SET widget_id = NULL WHERE widget_id = 1",
+		"DELETE FROM tenant.active_widget_names WHERE widget_id = 1",
+	} {
+		_, err := reopened.Exec(sql)
+		sqlErr := assertSQLError(t, err)
+		if got, want := sqlErr.Diagnostics[0].SQLState, sqlStateFeatureNotSupported; got != want {
+			t.Fatalf("Exec(%q) SQLSTATE = %q, want %q", sql, got, want)
+		}
+		if got, want := sqlErr.Diagnostics[0].Message, "writes to views are not supported"; got != want {
+			t.Fatalf("Exec(%q) diagnostic = %q, want %q", sql, got, want)
+		}
+	}
+
+	if _, err := reopened.Exec("DROP SCHEMA tenant"); !errors.Is(err, catalog.ErrSchemaNotEmpty) {
+		t.Fatalf("Exec(DROP SCHEMA with view) error = %v, want %v", err, catalog.ErrSchemaNotEmpty)
+	}
+	if _, err := reopened.Exec("DROP VIEW tenant.active_widget_names"); err != nil {
+		t.Fatalf("Exec(DROP VIEW) error = %v", err)
+	}
+	if _, err := reopened.Query("SELECT * FROM tenant.active_widget_names"); err == nil {
+		t.Fatalf("Query(dropped view) error = nil, want error")
 	}
 }
 
@@ -477,6 +599,43 @@ func TestQueryExecutesGroupedExpressionsAndHavingEndToEnd(t *testing.T) {
 	}
 }
 
+func TestQueryExplainsLogicalPlan(t *testing.T) {
+	t.Parallel()
+
+	db := mustOpenDB(t, filepath.Join(t.TempDir(), "catalog.json"))
+	mustExecSQL(t, db, "CREATE TABLE widgets (id INTEGER NOT NULL, name VARCHAR(20))")
+	mustExecSQL(t, db, "CREATE VIEW widget_ids AS SELECT id FROM widgets")
+
+	result, err := db.Query("EXPLAIN SELECT id FROM widget_ids WHERE id = 1")
+	if err != nil {
+		t.Fatalf("Query(EXPLAIN) error = %v", err)
+	}
+
+	if got, want := result.Columns, []Column{{Name: "query_plan", Type: "VARCHAR"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("EXPLAIN columns = %#v, want %#v", got, want)
+	}
+	if len(result.Rows) < 3 {
+		t.Fatalf("EXPLAIN rows = %#v, want plan lines", result.Rows)
+	}
+
+	joined := explainRowsText(result.Rows)
+	for _, want := range []string{
+		"Project",
+		"Filter(predicate=id = 1)",
+		"Scan(table=public.widget_ids",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("EXPLAIN plan missing %q:\n%s", want, joined)
+		}
+	}
+
+	_, err = db.Query("EXPLAIN ANALYZE SELECT id FROM missing_widgets")
+	sqlErr := assertSQLError(t, err)
+	if got, want := sqlErr.Diagnostics[0].SQLState, sqlStateFeatureNotSupported; got != want {
+		t.Fatalf("EXPLAIN ANALYZE SQLSTATE = %q, want %q", got, want)
+	}
+}
+
 func TestQueryRejectsUnsupportedShapes(t *testing.T) {
 	t.Parallel()
 
@@ -673,6 +832,19 @@ func TestJoinUsingAndNaturalRemainUnsupported(t *testing.T) {
 			t.Fatalf("Query(%q) SQLSTATE = %q, want %q", sql, got, want)
 		}
 	}
+}
+
+func explainRowsText(rows [][]any) string {
+	lines := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if len(row) == 0 {
+			continue
+		}
+		line, _ := row[0].(string)
+		lines = append(lines, line)
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func setupJoinFixture(t *testing.T) *DB {

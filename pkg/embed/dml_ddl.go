@@ -36,6 +36,20 @@ func (s *session) exec(sql string) (execOutcome, error) {
 	case *parser.DeleteStmt:
 		result, err := s.execDelete(ctx, stmt)
 		return execOutcome{result: result}, err
+	case *parser.CreateSchemaStmt:
+		if !s.allowDDL {
+			return execOutcome{}, featureError(stmt, "DDL is not supported inside explicit transactions in Phase 1 embed")
+		}
+
+		err := s.execCreateSchema(stmt)
+		return execOutcome{catalogChanged: err == nil}, err
+	case *parser.DropSchemaStmt:
+		if !s.allowDDL {
+			return execOutcome{}, featureError(stmt, "DDL is not supported inside explicit transactions in Phase 1 embed")
+		}
+
+		err := s.execDropSchema(stmt)
+		return execOutcome{catalogChanged: err == nil}, err
 	case *parser.CreateTableStmt:
 		if !s.allowDDL {
 			return execOutcome{}, featureError(stmt, "DDL is not supported inside explicit transactions in Phase 1 embed")
@@ -49,6 +63,20 @@ func (s *session) exec(sql string) (execOutcome, error) {
 		}
 
 		err := s.execDropTable(stmt)
+		return execOutcome{catalogChanged: err == nil}, err
+	case *parser.CreateViewStmt:
+		if !s.allowDDL {
+			return execOutcome{}, featureError(stmt, "DDL is not supported inside explicit transactions in Phase 1 embed")
+		}
+
+		err := s.execCreateView(ctx, stmt)
+		return execOutcome{catalogChanged: err == nil}, err
+	case *parser.DropViewStmt:
+		if !s.allowDDL {
+			return execOutcome{}, featureError(stmt, "DDL is not supported inside explicit transactions in Phase 1 embed")
+		}
+
+		err := s.execDropView(stmt)
 		return execOutcome{catalogChanged: err == nil}, err
 	default:
 		return execOutcome{}, featureError(node, "Exec does not support %T statements", node)
@@ -83,7 +111,7 @@ func (s *session) execInsert(ctx *analysisContext, stmt *parser.InsertStmt) (Com
 			return CommandResult{}, featureError(source, "INSERT query source must be SELECT")
 		}
 
-		child, columns, err := buildSelectOperator(query, ctx.bindings, ctx.types, s.store, s.tx)
+		child, columns, err := buildSelectOperator(query, ctx.bindings, ctx.types, s.cat, s.store, s.tx)
 		if err != nil {
 			return CommandResult{}, err
 		}
@@ -110,7 +138,7 @@ func (s *session) execUpdate(ctx *analysisContext, stmt *parser.UpdateStmt) (Com
 		return CommandResult{}, err
 	}
 
-	child, shape, err := buildTargetScan(ctx.bindings, ctx.types, s.store, s.tx, relation, stmt.Where)
+	child, shape, err := buildTargetScan(ctx.bindings, ctx.types, s.cat, s.store, s.tx, relation, stmt.Where)
 	if err != nil {
 		return CommandResult{}, err
 	}
@@ -134,7 +162,7 @@ func (s *session) execUpdate(ctx *analysisContext, stmt *parser.UpdateStmt) (Com
 			update.Ordinals = append(update.Ordinals, index)
 		}
 		for _, value := range assignment.Values {
-			compiled, err := compileExpression(ctx.bindings, ctx.types, s.store, s.tx, value, shape)
+			compiled, err := compileExpression(ctx.bindings, ctx.types, s.cat, s.store, s.tx, value, shape)
 			if err != nil {
 				return CommandResult{}, err
 			}
@@ -161,12 +189,31 @@ func (s *session) execDelete(ctx *analysisContext, stmt *parser.DeleteStmt) (Com
 		return CommandResult{}, err
 	}
 
-	child, _, err := buildTargetScan(ctx.bindings, ctx.types, s.store, s.tx, relation, stmt.Where)
+	child, _, err := buildTargetScan(ctx.bindings, ctx.types, s.cat, s.store, s.tx, relation, stmt.Where)
 	if err != nil {
 		return CommandResult{}, err
 	}
 
 	return runWriteOperator(executor.NewDelete(s.store, s.tx, relation.TableID, child))
+}
+
+func (s *session) execCreateSchema(stmt *parser.CreateSchemaStmt) error {
+	if stmt == nil || stmt.Name == nil {
+		return internalError(stmt, "missing schema name")
+	}
+
+	return runOperator(executor.NewCreateSchema(s.cat, &catalog.SchemaDescriptor{Name: stmt.Name.Name}))
+}
+
+func (s *session) execDropSchema(stmt *parser.DropSchemaStmt) error {
+	if stmt == nil || stmt.Name == nil {
+		return internalError(stmt, "missing schema name")
+	}
+	if strings.EqualFold(stmt.Behavior, "CASCADE") {
+		return featureError(stmt, "DROP SCHEMA CASCADE is not supported")
+	}
+
+	return runOperator(executor.NewDropSchema(s.cat, stmt.Name.Name))
 }
 
 func (s *session) execCreateTable(ctx *analysisContext, stmt *parser.CreateTableStmt) error {
@@ -178,6 +225,15 @@ func (s *session) execCreateTable(ctx *analysisContext, stmt *parser.CreateTable
 	return runOperator(executor.NewCreateTable(s.cat, s.tx, s.store, desc))
 }
 
+func (s *session) execCreateView(ctx *analysisContext, stmt *parser.CreateViewStmt) error {
+	desc, err := createViewDescriptor(stmt, ctx)
+	if err != nil {
+		return err
+	}
+
+	return runOperator(executor.NewCreateView(s.cat, desc))
+}
+
 func (s *session) execDropTable(stmt *parser.DropTableStmt) error {
 	tableID, err := tableIDFromName(stmt.Name)
 	if err != nil {
@@ -185,6 +241,15 @@ func (s *session) execDropTable(stmt *parser.DropTableStmt) error {
 	}
 
 	return runOperator(executor.NewDropTable(s.cat, s.tx, s.store, tableID))
+}
+
+func (s *session) execDropView(stmt *parser.DropViewStmt) error {
+	viewID, err := tableIDFromName(stmt.Name)
+	if err != nil {
+		return err
+	}
+
+	return runOperator(executor.NewDropView(s.cat, viewID))
 }
 
 func resolvedTargetRelation(bindings *analyzer.Bindings, table *parser.QualifiedName) (*analyzer.RelationBinding, error) {
@@ -195,6 +260,9 @@ func resolvedTargetRelation(bindings *analyzer.Bindings, table *parser.Qualified
 	relation, ok := bindings.Relation(table)
 	if !ok || relation == nil {
 		return nil, internalError(table, "missing target relation metadata")
+	}
+	if relation.View != nil {
+		return nil, featureError(table, "writes to views are not supported")
 	}
 
 	return relation, nil
@@ -280,7 +348,7 @@ func buildInsertRows(
 				return nil, internalError(nil, "INSERT row source index %d out of range", sourceIndex)
 			}
 
-			compiled, err := compileExpression(ctx.bindings, ctx.types, store, tx, sourceRow[sourceIndex], rowShape{})
+			compiled, err := compileExpression(ctx.bindings, ctx.types, nil, store, tx, sourceRow[sourceIndex], rowShape{})
 			if err != nil {
 				return nil, err
 			}
@@ -311,6 +379,7 @@ func countIncludedColumns(mapping []int) int {
 func buildTargetScan(
 	bindings *analyzer.Bindings,
 	types *analyzer.Types,
+	cat catalog.Catalog,
 	store *memory.Store,
 	tx storage.Transaction,
 	relation *analyzer.RelationBinding,
@@ -335,7 +404,7 @@ func buildTargetScan(
 		return child, shape, nil
 	}
 
-	predicate, err := compileExpression(bindings, types, store, tx, where, shape)
+	predicate, err := compileExpression(bindings, types, cat, store, tx, where, shape)
 	if err != nil {
 		return nil, rowShape{}, err
 	}
@@ -410,6 +479,81 @@ func createTableDescriptor(stmt *parser.CreateTableStmt, sql string) (*catalog.T
 	}
 
 	return desc, nil
+}
+
+func createViewDescriptor(stmt *parser.CreateViewStmt, ctx *analysisContext) (*catalog.ViewDescriptor, error) {
+	if stmt == nil {
+		return nil, internalError(stmt, "missing CREATE VIEW statement")
+	}
+	if ctx == nil || ctx.types == nil {
+		return nil, internalError(stmt, "missing CREATE VIEW type metadata")
+	}
+
+	viewID, err := tableIDFromName(stmt.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	outputs, ok := ctx.types.QueryOutputs(stmt.Query)
+	if !ok {
+		return nil, internalError(stmt, "missing CREATE VIEW query output metadata")
+	}
+	names, err := createViewColumnNames(stmt, ctx.bindings)
+	if err != nil {
+		return nil, err
+	}
+	if len(names) != len(outputs) {
+		return nil, internalError(stmt, "CREATE VIEW column metadata does not match query output")
+	}
+
+	desc := &catalog.ViewDescriptor{
+		ID:          viewID,
+		Columns:     make([]catalog.ColumnDescriptor, 0, len(outputs)),
+		Query:       catalog.ExpressionDescriptor{SQL: sqlSlice(ctx.sql, stmt.Query)},
+		CheckOption: stmt.CheckOption,
+	}
+	for index := range outputs {
+		desc.Columns = append(desc.Columns, catalog.ColumnDescriptor{
+			Name: names[index],
+			Type: outputs[index],
+		})
+	}
+
+	return desc, nil
+}
+
+func createViewColumnNames(stmt *parser.CreateViewStmt, bindings *analyzer.Bindings) ([]string, error) {
+	if stmt == nil {
+		return nil, nil
+	}
+	if len(stmt.Columns) > 0 {
+		names := make([]string, 0, len(stmt.Columns))
+		for _, column := range stmt.Columns {
+			if column == nil {
+				continue
+			}
+			names = append(names, column.Name)
+		}
+		return names, nil
+	}
+
+	if bindings == nil {
+		return nil, internalError(stmt, "missing CREATE VIEW relation metadata")
+	}
+
+	relation, ok := bindings.Relation(stmt.Query)
+	if !ok || relation == nil {
+		return nil, internalError(stmt, "missing CREATE VIEW relation metadata")
+	}
+
+	names := make([]string, 0, len(relation.Columns))
+	for _, column := range relation.Columns {
+		if column == nil || strings.TrimSpace(column.Name) == "" {
+			return nil, featureError(stmt, "CREATE VIEW requires explicit column names for unnamed query expressions")
+		}
+		names = append(names, column.Name)
+	}
+	return names, nil
 }
 
 func constraintDescriptor(

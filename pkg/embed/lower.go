@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jamesdrando/tucotuco/internal/analyzer"
+	"github.com/jamesdrando/tucotuco/internal/catalog"
 	internaldiag "github.com/jamesdrando/tucotuco/internal/diag"
 	"github.com/jamesdrando/tucotuco/internal/executor"
 	"github.com/jamesdrando/tucotuco/internal/parser"
@@ -20,9 +21,11 @@ const sqlStateCardinalityViolation = "21000"
 type planLowerer struct {
 	bindings *analyzer.Bindings
 	types    *analyzer.Types
+	catalog  catalog.Catalog
 	store    storage.Storage
 	tx       storage.Transaction
 	outer    *correlatedContext
+	viewPath []storage.TableID
 }
 
 type loweredPlan struct {
@@ -51,16 +54,18 @@ func buildQueryOperator(
 	query parser.QueryExpr,
 	bindings *analyzer.Bindings,
 	types *analyzer.Types,
+	cat catalog.Catalog,
 	store storage.Storage,
 	tx storage.Transaction,
 ) (executor.Operator, []planner.Column, error) {
 	lowerer := planLowerer{
 		bindings: bindings,
 		types:    types,
+		catalog:  cat,
 		store:    store,
 		tx:       tx,
 	}
-	if queryRequiresDirectLowering(query) {
+	if queryRequiresDirectLowering(query) || queryReferencesView(query, bindings) {
 		lowered, err := lowerer.lowerQuery(query)
 		if err != nil {
 			return nil, nil, err
@@ -86,10 +91,11 @@ func buildSelectOperator(
 	stmt *parser.SelectStmt,
 	bindings *analyzer.Bindings,
 	types *analyzer.Types,
+	cat catalog.Catalog,
 	store storage.Storage,
 	tx storage.Transaction,
 ) (executor.Operator, []planner.Column, error) {
-	return buildQueryOperator(stmt, bindings, types, store, tx)
+	return buildQueryOperator(stmt, bindings, types, cat, store, tx)
 }
 
 func (l planLowerer) lowerQuery(query parser.QueryExpr) (loweredPlan, error) {
@@ -127,7 +133,7 @@ func (l planLowerer) lower(plan planner.Plan) (loweredPlan, error) {
 			return loweredPlan{}, err
 		}
 
-		predicate, err := compileExpression(l.bindings, l.types, l.store, l.tx, node.Predicate, child.shape)
+		predicate, err := compileExpression(l.bindings, l.types, l.catalog, l.store, l.tx, node.Predicate, child.shape)
 		if err != nil {
 			return loweredPlan{}, err
 		}
@@ -145,7 +151,7 @@ func (l planLowerer) lower(plan planner.Plan) (loweredPlan, error) {
 
 		exprs := make([]executor.CompiledExpr, 0, len(node.Projections))
 		for _, projection := range node.Projections {
-			expr, err := compileExpression(l.bindings, l.types, l.store, l.tx, projection.Expr, child.shape)
+			expr, err := compileExpression(l.bindings, l.types, l.catalog, l.store, l.tx, projection.Expr, child.shape)
 			if err != nil {
 				return loweredPlan{}, err
 			}
@@ -170,7 +176,7 @@ func (l planLowerer) lower(plan planner.Plan) (loweredPlan, error) {
 		var predicate executor.CompiledExpr
 		hasPredicate := false
 		if node.Condition != nil {
-			predicate, err = compileExpression(l.bindings, l.types, l.store, l.tx, node.Condition, shapeFromColumns(node.Columns()))
+			predicate, err = compileExpression(l.bindings, l.types, l.catalog, l.store, l.tx, node.Condition, shapeFromColumns(node.Columns()))
 			if err != nil {
 				return loweredPlan{}, err
 			}
@@ -253,7 +259,7 @@ func (l planLowerer) lowerSelect(stmt *parser.SelectStmt) (loweredPlan, error) {
 	}
 	input = l.attachOuter(input)
 	if stmt.Where != nil {
-		predicate, err := compileExpression(l.bindings, l.types, l.store, l.tx, stmt.Where, input.shape)
+		predicate, err := compileExpression(l.bindings, l.types, l.catalog, l.store, l.tx, stmt.Where, input.shape)
 		if err != nil {
 			return loweredPlan{}, err
 		}
@@ -343,6 +349,7 @@ func (l planLowerer) buildAggregateLowering(stmt *parser.SelectStmt, input lower
 			base: expressionMetadata{
 				bindings: l.bindings,
 				types:    l.types,
+				catalog:  l.catalog,
 				store:    l.store,
 				tx:       l.tx,
 			},
@@ -359,7 +366,7 @@ func (l planLowerer) buildAggregateLowering(stmt *parser.SelectStmt, input lower
 			continue
 		}
 
-		compiled, err := compileExpression(l.bindings, l.types, l.store, l.tx, expr, input.shape)
+		compiled, err := compileExpression(l.bindings, l.types, l.catalog, l.store, l.tx, expr, input.shape)
 		if err != nil {
 			return aggregateLowering{}, err
 		}
@@ -438,7 +445,7 @@ func (l planLowerer) buildAggregateSpec(call *parser.FunctionCall, input rowShap
 		return executor.AggregateSpec{}, sqltypes.TypeDesc{}, internalError(call, "aggregate function %q is missing its argument", name)
 	}
 
-	compiled, err := compileExpression(l.bindings, l.types, l.store, l.tx, call.Args[0], input)
+	compiled, err := compileExpression(l.bindings, l.types, l.catalog, l.store, l.tx, call.Args[0], input)
 	if err != nil {
 		return executor.AggregateSpec{}, sqltypes.TypeDesc{}, err
 	}
@@ -752,10 +759,18 @@ func (l planLowerer) lowerFromSource(source *parser.FromSource) (loweredPlan, er
 			return loweredPlan{}, internalError(source, "embed is missing relation metadata for the FROM source")
 		}
 
-		lowered = loweredPlan{
-			op:      executor.NewSeqScan(l.store, l.tx, relation.TableID, storage.ScanOptions{}),
-			shape:   shapeFromRelationBinding(relation, l.types),
-			columns: columnsFromRelationBinding(relation, l.types),
+		if relation.View != nil {
+			child, err := l.lowerViewRelation(source, relation)
+			if err != nil {
+				return loweredPlan{}, err
+			}
+			lowered = child
+		} else {
+			lowered = loweredPlan{
+				op:      executor.NewSeqScan(l.store, l.tx, relation.TableID, storage.ScanOptions{}),
+				shape:   shapeFromRelationBinding(relation, l.types),
+				columns: columnsFromRelationBinding(relation, l.types),
+			}
 		}
 	case parser.QueryExpr:
 		child, err := l.lowerQuery(inner)
@@ -779,6 +794,59 @@ func (l planLowerer) lowerFromSource(source *parser.FromSource) (loweredPlan, er
 	}
 
 	return lowered, nil
+}
+
+func (l planLowerer) lowerViewRelation(node parser.Node, relation *analyzer.RelationBinding) (loweredPlan, error) {
+	if relation == nil || relation.View == nil {
+		return loweredPlan{}, internalError(node, "embed is missing view metadata")
+	}
+	if l.catalog == nil {
+		return loweredPlan{}, internalError(node, "embed cannot expand view without catalog metadata")
+	}
+	if l.viewPathContains(relation.TableID) {
+		return loweredPlan{}, featureError(node, "recursive view expansion is not supported")
+	}
+
+	script, err := parseScript(relation.View.Query.SQL)
+	if err != nil {
+		return loweredPlan{}, err
+	}
+	if len(script.Nodes) != 1 {
+		return loweredPlan{}, internalError(node, "view %q does not store exactly one query", relation.TableID.String())
+	}
+	query, ok := script.Nodes[0].(parser.QueryExpr)
+	if !ok {
+		return loweredPlan{}, internalError(node, "view %q does not store a query expression", relation.TableID.String())
+	}
+
+	bindings, resolveDiags := analyzer.NewResolver(l.catalog).ResolveScript(script)
+	if len(resolveDiags) != 0 {
+		return loweredPlan{}, diagnosticsError(resolveDiags)
+	}
+	types, typeDiags := analyzer.NewTypeChecker(bindings).CheckScript(script)
+	if len(typeDiags) != 0 {
+		return loweredPlan{}, diagnosticsError(typeDiags)
+	}
+
+	child := planLowerer{
+		bindings: bindings,
+		types:    types,
+		catalog:  l.catalog,
+		store:    l.store,
+		tx:       l.tx,
+		viewPath: append(append([]storage.TableID{}, l.viewPath...), relation.TableID),
+	}
+	return child.lowerQuery(query)
+}
+
+func (l planLowerer) viewPathContains(id storage.TableID) bool {
+	for _, existing := range l.viewPath {
+		if existing == id {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (l planLowerer) lowerJoinExpr(join *parser.JoinExpr) (loweredPlan, error) {
@@ -819,7 +887,7 @@ func (l planLowerer) lowerJoinExpr(join *parser.JoinExpr) (loweredPlan, error) {
 		if l.outer != nil {
 			predicateShape = predicateShape.append(l.outer.shape)
 		}
-		predicate, err = compileExpression(l.bindings, l.types, l.store, l.tx, join.Condition, predicateShape)
+		predicate, err = compileExpression(l.bindings, l.types, l.catalog, l.store, l.tx, join.Condition, predicateShape)
 		if err != nil {
 			return loweredPlan{}, err
 		}
@@ -913,7 +981,7 @@ func (l planLowerer) lowerSelectProjection(stmt *parser.SelectStmt, input lowere
 				}
 			}
 
-			compiled, err := compileExpression(l.bindings, l.types, l.store, l.tx, expr, input.shape)
+			compiled, err := compileExpression(l.bindings, l.types, l.catalog, l.store, l.tx, expr, input.shape)
 			if err != nil {
 				return loweredPlan{}, err
 			}
@@ -1039,6 +1107,7 @@ func columnTypes(columns []planner.Column) []sqltypes.TypeDesc {
 func compileExpression(
 	bindings *analyzer.Bindings,
 	types *analyzer.Types,
+	cat catalog.Catalog,
 	store storage.Storage,
 	tx storage.Transaction,
 	node parser.Node,
@@ -1047,6 +1116,7 @@ func compileExpression(
 	return executor.CompileExpr(node, expressionMetadata{
 		bindings: bindings,
 		types:    types,
+		catalog:  cat,
 		store:    store,
 		tx:       tx,
 		shape:    shape,
@@ -1056,6 +1126,7 @@ func compileExpression(
 type expressionMetadata struct {
 	bindings *analyzer.Bindings
 	types    *analyzer.Types
+	catalog  catalog.Catalog
 	store    storage.Storage
 	tx       storage.Transaction
 	shape    rowShape
@@ -1227,6 +1298,7 @@ func (m expressionMetadata) materializeSubquery(query parser.QueryExpr, outerRow
 	lowerer := planLowerer{
 		bindings: m.bindings,
 		types:    m.types,
+		catalog:  m.catalog,
 		store:    m.store,
 		tx:       m.tx,
 		outer: &correlatedContext{
@@ -1550,6 +1622,51 @@ func validateSelectForEmbed(stmt *parser.SelectStmt) error {
 
 func queryRequiresDirectLowering(query parser.QueryExpr) bool {
 	return queryContainsJoin(query) || queryContainsAggregate(query)
+}
+
+func queryReferencesView(query parser.QueryExpr, bindings *analyzer.Bindings) bool {
+	if bindings == nil {
+		return false
+	}
+
+	switch query := query.(type) {
+	case nil:
+		return false
+	case *parser.SelectStmt:
+		for _, source := range query.From {
+			if fromNodeReferencesView(source, bindings) {
+				return true
+			}
+		}
+		return false
+	case *parser.SetOpExpr:
+		return queryReferencesView(query.Left, bindings) || queryReferencesView(query.Right, bindings)
+	default:
+		return false
+	}
+}
+
+func fromNodeReferencesView(node parser.Node, bindings *analyzer.Bindings) bool {
+	switch node := node.(type) {
+	case nil:
+		return false
+	case *parser.FromSource:
+		if relation, ok := bindings.Relation(node); ok && relation != nil && relation.View != nil {
+			return true
+		}
+		switch source := node.Source.(type) {
+		case parser.QueryExpr:
+			return queryReferencesView(source, bindings)
+		case *parser.JoinExpr:
+			return fromNodeReferencesView(source, bindings)
+		default:
+			return false
+		}
+	case *parser.JoinExpr:
+		return fromNodeReferencesView(node.Left, bindings) || fromNodeReferencesView(node.Right, bindings)
+	default:
+		return false
+	}
 }
 
 func queryContainsJoin(query parser.QueryExpr) bool {

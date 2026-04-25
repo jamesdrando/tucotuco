@@ -29,6 +29,11 @@ func (p *typeCheckPass) validateAggregateStatement(node parser.Node) {
 	switch node := node.(type) {
 	case *parser.SelectStmt:
 		p.validateAggregateSelect(node)
+	case *parser.ExplainStmt:
+		if node.Analyze {
+			return
+		}
+		p.validateAggregateQuery(node.Query)
 	case *parser.InsertStmt:
 		p.validateAggregateInsert(node)
 	case *parser.UpdateStmt:
@@ -37,6 +42,20 @@ func (p *typeCheckPass) validateAggregateStatement(node parser.Node) {
 		p.validateAggregateDelete(node)
 	case *parser.CreateTableStmt:
 		p.validateAggregateCreateTable(node)
+	case *parser.CreateViewStmt:
+		p.validateAggregateQuery(node.Query)
+	}
+}
+
+func (p *typeCheckPass) validateAggregateQuery(query parser.QueryExpr) {
+	switch query := query.(type) {
+	case nil:
+		return
+	case *parser.SelectStmt:
+		p.validateAggregateSelect(query)
+	case *parser.SetOpExpr:
+		p.validateAggregateQuery(query.Left)
+		p.validateAggregateQuery(query.Right)
 	}
 }
 

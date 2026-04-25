@@ -86,6 +86,27 @@ func LoadFile(path string) (*Memory, error) {
 				)
 			}
 		}
+		for viewIndex := range file.Schemas[schemaIndex].Views {
+			viewDesc, err := file.Schemas[schemaIndex].Views[viewIndex].toDescriptor(schemaDesc.Name)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"catalog: load schema %q view %d from %q: %w",
+					schemaDesc.Name,
+					viewIndex,
+					path,
+					errors.Join(ErrInvalidPersistenceFile, err),
+				)
+			}
+			if err := cat.CreateView(viewDesc); err != nil {
+				return nil, fmt.Errorf(
+					"catalog: load schema %q view %d from %q: %w",
+					schemaDesc.Name,
+					viewIndex,
+					path,
+					errors.Join(ErrInvalidPersistenceFile, err),
+				)
+			}
+		}
 	}
 
 	return cat, nil
@@ -141,6 +162,7 @@ func (c *Memory) snapshotPersistenceFile() persistedCatalogFile {
 			Name:             schemaDesc.Name,
 			DefaultCollation: schemaDesc.DefaultCollation,
 			Tables:           make([]persistedTable, 0, len(schema.tables)),
+			Views:            make([]persistedView, 0, len(schema.views)),
 		}
 
 		tableNames := make([]string, 0, len(schema.tables))
@@ -152,6 +174,17 @@ func (c *Memory) snapshotPersistenceFile() persistedCatalogFile {
 		for _, tableName := range tableNames {
 			table := schema.tables[tableName]
 			entry.Tables = append(entry.Tables, newPersistedTable(cloneTableDescriptor(&table.descriptor)))
+		}
+
+		viewNames := make([]string, 0, len(schema.views))
+		for name := range schema.views {
+			viewNames = append(viewNames, name)
+		}
+		sort.Strings(viewNames)
+
+		for _, viewName := range viewNames {
+			view := schema.views[viewName]
+			entry.Views = append(entry.Views, newPersistedView(cloneViewDescriptor(&view.descriptor)))
 		}
 
 		file.Schemas = append(file.Schemas, entry)
@@ -208,6 +241,7 @@ type persistedSchema struct {
 	Name             string           `json:"name"`
 	DefaultCollation string           `json:"default_collation,omitempty"`
 	Tables           []persistedTable `json:"tables"`
+	Views            []persistedView  `json:"views,omitempty"`
 }
 
 func (s persistedSchema) toDescriptor() *SchemaDescriptor {
@@ -247,6 +281,45 @@ func (t persistedTable) toDescriptor(schemaName string) (*TableDescriptor, error
 	}
 	for index := range t.Columns {
 		column, err := t.Columns[index].toDescriptor()
+		if err != nil {
+			return nil, fmt.Errorf("column %d: %w", index, err)
+		}
+		desc.Columns = append(desc.Columns, *column)
+	}
+
+	return desc, nil
+}
+
+type persistedView struct {
+	Name        string               `json:"name"`
+	Columns     []persistedColumn    `json:"columns"`
+	Query       ExpressionDescriptor `json:"query"`
+	CheckOption string               `json:"check_option,omitempty"`
+}
+
+func newPersistedView(desc *ViewDescriptor) persistedView {
+	view := persistedView{
+		Name:        desc.ID.Name,
+		Columns:     make([]persistedColumn, 0, len(desc.Columns)),
+		Query:       desc.Query,
+		CheckOption: desc.CheckOption,
+	}
+	for index := range desc.Columns {
+		view.Columns = append(view.Columns, newPersistedColumn(desc.Columns[index]))
+	}
+
+	return view
+}
+
+func (v persistedView) toDescriptor(schemaName string) (*ViewDescriptor, error) {
+	desc := &ViewDescriptor{
+		ID:          storage.TableID{Schema: schemaName, Name: v.Name},
+		Columns:     make([]ColumnDescriptor, 0, len(v.Columns)),
+		Query:       v.Query,
+		CheckOption: v.CheckOption,
+	}
+	for index := range v.Columns {
+		column, err := v.Columns[index].toDescriptor()
 		if err != nil {
 			return nil, fmt.Errorf("column %d: %w", index, err)
 		}

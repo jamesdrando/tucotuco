@@ -263,13 +263,21 @@
 - [x] **T-137** — Full SQL-92 aggregate functions `[parallel-safe]` `depends: M1`
   - Enabled planner/embed aggregate queries for global and grouped `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, and `EVERY`, added `HAVING` support on top of the aggregate plan path, and closed the slice with SQL-92 golden fixture `071_aggregate_functions` plus refreshed aggregate-related planner-limit transcripts.
 
-- [ ] **T-138** — CREATE SCHEMA / DROP SCHEMA `[parallel-safe]` `depends: T-099`
+- [x] **T-138** — CREATE SCHEMA / DROP SCHEMA `[parallel-safe]` `depends: T-099`
+  - Added parser CST, executor DDL operators, embed execution/persistence wiring, catalog schema lookup coverage, and SQL-92 golden fixture `072_schema_ddl`.
+  - `DROP SCHEMA` uses RESTRICT-style empty-schema catalog enforcement; explicit `CASCADE` is parsed but returns a feature error until cascade semantics are specified.
 
-- [ ] **T-139** — Qualified names (`schema.table.column`) `[parallel-safe]` `depends: T-060`
+- [x] **T-139** — Qualified names (`schema.table.column`) `[parallel-safe]` `depends: T-060`
+  - Added analyzer/lowering support for schema-qualified relation columns and `schema.table.*`, preserving alias shadowing rules and table-target depth limits, with SQL-92 golden fixture `073_qualified_schema_names`.
 
-- [ ] **T-140** — CREATE VIEW / DROP VIEW (logical) `[serial]` `depends: T-081`
+- [x] **T-140** — CREATE VIEW / DROP VIEW (logical) `[serial]` `depends: T-081`
+  - Added parser, catalog persistence, analyzer resolution, executor DDL, and embed runtime expansion for logical views, with writes to views rejected as unsupported.
+  - Added focused unit coverage plus SQL-92 golden fixture `074_view_ddl`.
 
-- [ ] **T-141** — EXPLAIN (logical plan text output) `[parallel-safe]` `depends: T-082`
+- [x] **T-141** — EXPLAIN (logical plan text output) `[parallel-safe]` `depends: T-082`
+  - Added parser/analyzer/embed/script support for `EXPLAIN` over SELECT/query expressions using `internal/planner.Explain`.
+  - `EXPLAIN` returns one `query_plan VARCHAR` column with one row per rendered plan line; `EXPLAIN ANALYZE` returns an explicit feature error.
+  - Added focused parser/script/embed coverage plus SQL-92 golden fixture `075_explain`.
 
 ### 2C — Constraints
 

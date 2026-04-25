@@ -119,6 +119,20 @@ func (p *typeCheckPass) insertTargetRelation(stmt *parser.InsertStmt) (*Relation
 	return relation, true
 }
 
+func (p *typeCheckPass) writeTargetIsView(name *parser.QualifiedName) bool {
+	if name == nil {
+		return false
+	}
+
+	bindings := p.bindings()
+	if bindings == nil {
+		return false
+	}
+
+	relation, ok := bindings.Relation(name)
+	return ok && relation != nil && relation.View != nil
+}
+
 func insertProvidedColumns(stmt *parser.InsertStmt, relation *RelationBinding) map[string]struct{} {
 	provided := make(map[string]struct{})
 	if stmt == nil || relation == nil {

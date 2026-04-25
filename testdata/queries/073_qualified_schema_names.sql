@@ -1,0 +1,16 @@
+CREATE SCHEMA sales;
+CREATE SCHEMA archive;
+CREATE TABLE sales.widgets (id INTEGER NOT NULL, label VARCHAR(20));
+CREATE TABLE archive.widgets (id INTEGER NOT NULL, label VARCHAR(20));
+INSERT INTO sales.widgets VALUES (1, 'sales');
+INSERT INTO archive.widgets VALUES (1, 'archive');
+SELECT sales.widgets.id, sales.widgets.label FROM sales.widgets WHERE sales.widgets.id = 1;
+SELECT archive.widgets.id, archive.widgets.label FROM archive.widgets WHERE archive.widgets.id = 1;
+UPDATE sales.widgets SET label = 'closed' WHERE sales.widgets.id = 1;
+DELETE FROM archive.widgets WHERE archive.widgets.id = 1;
+SELECT sales.widgets.id, sales.widgets.label FROM sales.widgets;
+SELECT archive.widgets.id, archive.widgets.label FROM archive.widgets;
+DROP TABLE sales.widgets;
+DROP TABLE archive.widgets;
+DROP SCHEMA sales;
+DROP SCHEMA archive;

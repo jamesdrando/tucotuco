@@ -60,6 +60,8 @@ func TestIsSelectStatement(t *testing.T) {
 		"SELECT 1":                       true,
 		"  /* note */ SELECT 1":          true,
 		"select 1":                       true,
+		"EXPLAIN SELECT 1":               true,
+		"-- comment\nEXPLAIN SELECT 1":   true,
 		"INSERT INTO t VALUES (1)":       false,
 		"-- comment\nUPDATE t SET a = 1": false,
 		"/* comment */ DELETE FROM t":    false,
@@ -93,21 +95,22 @@ func TestRunnerRoutesAndReturnsStructuredResults(t *testing.T) {
 		},
 	}
 
-	result, err := New(engine).Run("SELECT 1; INSERT INTO t VALUES (1);")
+	result, err := New(engine).Run("SELECT 1; EXPLAIN SELECT 1; INSERT INTO t VALUES (1);")
 	if err != nil {
 		t.Fatalf("Run() unexpected error: %v", err)
 	}
 
 	wantCalls := []string{
 		"query:SELECT 1",
+		"query:EXPLAIN SELECT 1",
 		"exec:INSERT INTO t VALUES (1)",
 	}
 	if !reflect.DeepEqual(engine.calls, wantCalls) {
 		t.Fatalf("engine calls mismatch\n got: %#v\nwant: %#v", engine.calls, wantCalls)
 	}
 
-	if len(result.Statements) != 2 {
-		t.Fatalf("Run() returned %d statements, want 2", len(result.Statements))
+	if len(result.Statements) != 3 {
+		t.Fatalf("Run() returned %d statements, want 3", len(result.Statements))
 	}
 	if got := result.Statements[0].Kind; got != StatementKindQuery {
 		t.Fatalf("first statement kind = %q, want %q", got, StatementKindQuery)
@@ -115,11 +118,14 @@ func TestRunnerRoutesAndReturnsStructuredResults(t *testing.T) {
 	if got := result.Statements[0].Query; got == nil || len(got.Rows) != 1 || len(got.Columns) != 1 {
 		t.Fatalf("first statement query result not populated: %#v", got)
 	}
-	if got := result.Statements[1].Kind; got != StatementKindCommand {
-		t.Fatalf("second statement kind = %q, want %q", got, StatementKindCommand)
+	if got := result.Statements[1].Kind; got != StatementKindQuery {
+		t.Fatalf("second statement kind = %q, want %q", got, StatementKindQuery)
 	}
-	if got := result.Statements[1].Command; got == nil || got.RowsAffected != 3 {
-		t.Fatalf("second statement command result = %#v, want rows affected 3", got)
+	if got := result.Statements[2].Kind; got != StatementKindCommand {
+		t.Fatalf("third statement kind = %q, want %q", got, StatementKindCommand)
+	}
+	if got := result.Statements[2].Command; got == nil || got.RowsAffected != 3 {
+		t.Fatalf("third statement command result = %#v, want rows affected 3", got)
 	}
 }
 

@@ -119,10 +119,14 @@ type RelationBinding struct {
 	// Descriptor is the resolved table descriptor for catalog-backed relations.
 	Descriptor *catalog.TableDescriptor
 
+	// View is the resolved view descriptor for catalog-backed logical views.
+	View *catalog.ViewDescriptor
+
 	// Columns stores the visible columns exposed by the relation.
 	Columns []*ColumnBinding
 
-	columnIndex map[string][]*ColumnBinding
+	columnIndex                 map[string][]*ColumnBinding
+	exposesCatalogQualifiedName bool
 }
 
 func newRelationBinding(name string, tableID storage.TableID, desc *catalog.TableDescriptor) *RelationBinding {
@@ -136,6 +140,23 @@ func newRelationBinding(name string, tableID storage.TableID, desc *catalog.Tabl
 
 func newCatalogRelation(name string, tableID storage.TableID, desc *catalog.TableDescriptor) *RelationBinding {
 	relation := newRelationBinding(name, tableID, desc)
+	relation.exposesCatalogQualifiedName = true
+	if desc == nil {
+		return relation
+	}
+
+	for index := range desc.Columns {
+		column := &desc.Columns[index]
+		relation.addColumn(column.Name, column, nil)
+	}
+
+	return relation
+}
+
+func newViewRelation(name string, tableID storage.TableID, desc *catalog.ViewDescriptor) *RelationBinding {
+	relation := newRelationBinding(name, tableID, nil)
+	relation.View = desc
+	relation.exposesCatalogQualifiedName = true
 	if desc == nil {
 		return relation
 	}
@@ -287,6 +308,41 @@ func (s *scope) lookupRelations(name string) []*RelationBinding {
 	return nil
 }
 
+func (s *scope) lookupRelationParts(parts []*parser.Identifier) []*RelationBinding {
+	if len(parts) == 0 {
+		return nil
+	}
+	if len(parts) == 1 {
+		return s.lookupRelations(parts[0].Name)
+	}
+	if len(parts) != 2 || s == nil {
+		return nil
+	}
+
+	var matches []*RelationBinding
+	for _, relation := range s.relations {
+		if relationMatchesCatalogName(relation, parts[0].Name, parts[1].Name) {
+			matches = append(matches, relation)
+		}
+	}
+	if len(matches) > 0 {
+		return matches
+	}
+	if s.parent != nil {
+		return s.parent.lookupRelationParts(parts)
+	}
+
+	return nil
+}
+
+func relationMatchesCatalogName(relation *RelationBinding, schema string, table string) bool {
+	if relation == nil || !relation.exposesCatalogQualifiedName {
+		return false
+	}
+
+	return relation.TableID.Schema == schema && relation.TableID.Name == table
+}
+
 func (s *scope) allColumns() []*ColumnBinding {
 	if s == nil {
 		return nil
@@ -314,6 +370,8 @@ func (p *resolvePass) resolveStatement(node parser.Node) {
 	switch node := node.(type) {
 	case parser.QueryExpr:
 		p.resolveQuery(node, nil)
+	case *parser.ExplainStmt:
+		p.resolveExplain(node)
 	case *parser.InsertStmt:
 		p.resolveInsert(node)
 	case *parser.UpdateStmt:
@@ -324,6 +382,10 @@ func (p *resolvePass) resolveStatement(node parser.Node) {
 		p.resolveCreateTable(node)
 	case *parser.DropTableStmt:
 		p.resolveDropTable(node)
+	case *parser.CreateViewStmt:
+		p.resolveCreateView(node)
+	case *parser.DropViewStmt:
+		p.resolveDropView(node)
 	}
 }
 
@@ -342,6 +404,17 @@ func (p *resolvePass) resolveQuery(query parser.QueryExpr, outer *scope) *Relati
 	default:
 		return nil
 	}
+}
+
+func (p *resolvePass) resolveExplain(stmt *parser.ExplainStmt) {
+	if stmt == nil {
+		return
+	}
+	if stmt.Analyze {
+		return
+	}
+
+	p.resolveQuery(stmt.Query, nil)
 }
 
 func (p *resolvePass) resolveSelect(stmt *parser.SelectStmt, outer *scope) *RelationBinding {
@@ -584,6 +657,22 @@ func (p *resolvePass) resolveDropTable(stmt *parser.DropTableStmt) {
 	p.resolveTargetTable(stmt.Name)
 }
 
+func (p *resolvePass) resolveCreateView(stmt *parser.CreateViewStmt) {
+	if stmt == nil {
+		return
+	}
+
+	p.resolveQuery(stmt.Query, nil)
+}
+
+func (p *resolvePass) resolveDropView(stmt *parser.DropViewStmt) {
+	if stmt == nil {
+		return
+	}
+
+	p.resolveTargetTable(stmt.Name)
+}
+
 func (p *resolvePass) resolveFromNode(node parser.Node, outer *scope) *scope {
 	switch node := node.(type) {
 	case *parser.FromSource:
@@ -603,6 +692,9 @@ func (p *resolvePass) resolveFromSource(source *parser.FromSource, outer *scope)
 	switch inner := source.Source.(type) {
 	case *parser.QualifiedName:
 		relation := p.resolveCatalogRelation(inner, visibleName(source.Alias, inner))
+		if relation != nil && source.Alias != nil {
+			relation.exposesCatalogQualifiedName = false
+		}
 		p.bindRelation(source, relation)
 		return newScope(relation)
 	case parser.QueryExpr:
@@ -772,14 +864,15 @@ func (p *resolvePass) resolveQualifiedName(node *parser.QualifiedName, currentSc
 		return
 	}
 
-	if len(node.Parts) != 2 {
-		p.addError(sqlStateUndefinedColumn, node.Pos(), "qualified column reference %q is not supported in Phase 1", qualifiedNameString(node))
+	if len(node.Parts) > 3 {
+		p.addError(sqlStateUndefinedColumn, node.Pos(), "qualified column reference %q is too deeply qualified", qualifiedNameString(node))
 		return
 	}
 
-	relationName := node.Parts[0].Name
-	columnName := node.Parts[1].Name
-	relations := currentScope.lookupRelations(relationName)
+	relationParts := node.Parts[:len(node.Parts)-1]
+	relationName := qualifiedNamePartsString(relationParts)
+	columnName := node.Parts[len(node.Parts)-1].Name
+	relations := currentScope.lookupRelationParts(relationParts)
 	switch len(relations) {
 	case 0:
 		p.addError(sqlStateUndefinedTable, node.Pos(), "relation %q does not exist", relationName)
@@ -822,20 +915,20 @@ func (p *resolvePass) resolveRelationQualifier(name *parser.QualifiedName, curre
 		return nil
 	}
 
-	if len(name.Parts) != 1 {
+	if len(name.Parts) == 0 || len(name.Parts) > 2 {
 		p.addError(sqlStateUndefinedTable, name.Pos(), "relation %q does not exist", qualifiedNameString(name))
 		return nil
 	}
 
-	relations := currentScope.lookupRelations(name.Parts[0].Name)
+	relations := currentScope.lookupRelationParts(name.Parts)
 	switch len(relations) {
 	case 0:
-		p.addError(sqlStateUndefinedTable, name.Pos(), "relation %q does not exist", name.Parts[0].Name)
+		p.addError(sqlStateUndefinedTable, name.Pos(), "relation %q does not exist", qualifiedNameString(name))
 		return nil
 	case 1:
 		return relations[0]
 	default:
-		p.addError(sqlStateAmbiguousAlias, name.Pos(), "relation reference %q is ambiguous", name.Parts[0].Name)
+		p.addError(sqlStateAmbiguousAlias, name.Pos(), "relation reference %q is ambiguous", qualifiedNameString(name))
 		return nil
 	}
 }
@@ -845,14 +938,29 @@ func (p *resolvePass) resolveTargetTable(name *parser.QualifiedName) *RelationBi
 }
 
 func (p *resolvePass) resolveCatalogRelation(name *parser.QualifiedName, visible string) *RelationBinding {
-	id, desc, ok := p.lookupCatalogTable(name)
+	relation, ok := p.lookupCatalogRelation(name, visible)
 	if !ok {
 		return nil
 	}
 
-	relation := newCatalogRelation(visible, id, desc)
 	p.bindRelation(name, relation)
 	return relation
+}
+
+func (p *resolvePass) lookupCatalogRelation(name *parser.QualifiedName, visible string) (*RelationBinding, bool) {
+	diagnosticCount := len(p.diagnostics)
+	id, desc, ok := p.lookupCatalogTable(name)
+	if ok {
+		return newCatalogRelation(visible, id, desc), true
+	}
+	p.diagnostics = p.diagnostics[:diagnosticCount]
+
+	id, view, ok := p.lookupCatalogView(name)
+	if ok {
+		return newViewRelation(visible, id, view), true
+	}
+
+	return nil, false
 }
 
 func (p *resolvePass) lookupCatalogTable(name *parser.QualifiedName) (storage.TableID, *catalog.TableDescriptor, bool) {
@@ -873,6 +981,35 @@ func (p *resolvePass) lookupCatalogTable(name *parser.QualifiedName) (storage.Ta
 	desc, err := p.resolver.catalog.LookupTable(id)
 	if err != nil {
 		if errors.Is(err, catalog.ErrSchemaNotFound) || errors.Is(err, catalog.ErrTableNotFound) {
+			p.addError(sqlStateUndefinedTable, name.Pos(), "table %q does not exist", id.String())
+			return storage.TableID{}, nil, false
+		}
+
+		p.addError(sqlStateUndefinedTable, name.Pos(), "could not resolve table %q: %v", id.String(), err)
+		return storage.TableID{}, nil, false
+	}
+
+	return id, desc, true
+}
+
+func (p *resolvePass) lookupCatalogView(name *parser.QualifiedName) (storage.TableID, *catalog.ViewDescriptor, bool) {
+	if name == nil {
+		return storage.TableID{}, nil, false
+	}
+	if p.resolver == nil || p.resolver.catalog == nil {
+		p.addError(sqlStateUndefinedTable, name.Pos(), "catalog is unavailable")
+		return storage.TableID{}, nil, false
+	}
+
+	id, ok := tableIDFromName(name, p.resolver.defaultSchema)
+	if !ok {
+		p.addError(sqlStateUndefinedTable, name.Pos(), "table reference %q is not supported in Phase 1", qualifiedNameString(name))
+		return storage.TableID{}, nil, false
+	}
+
+	desc, err := p.resolver.catalog.LookupView(id)
+	if err != nil {
+		if errors.Is(err, catalog.ErrSchemaNotFound) || errors.Is(err, catalog.ErrViewNotFound) {
 			p.addError(sqlStateUndefinedTable, name.Pos(), "table %q does not exist", id.String())
 			return storage.TableID{}, nil, false
 		}
@@ -926,8 +1063,12 @@ func qualifiedNameString(name *parser.QualifiedName) string {
 		return ""
 	}
 
-	parts := make([]string, 0, len(name.Parts))
-	for _, part := range name.Parts {
+	return qualifiedNamePartsString(name.Parts)
+}
+
+func qualifiedNamePartsString(nameParts []*parser.Identifier) string {
+	parts := make([]string, 0, len(nameParts))
+	for _, part := range nameParts {
 		if part != nil {
 			parts = append(parts, part.Name)
 		}

@@ -1,0 +1,75 @@
+fixture: 075_explain
+
+statement 1:
+  sql:
+    CREATE TABLE widgets (id INTEGER NOT NULL, name VARCHAR(20), active BOOLEAN)
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    INSERT INTO widgets VALUES (1, 'alice', TRUE)
+  result:
+    ok
+    rows_affected: 1
+
+statement 3:
+  sql:
+    INSERT INTO widgets VALUES (2, 'bob', FALSE)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    CREATE VIEW active_widget_ids AS SELECT id FROM widgets WHERE active = TRUE
+  result:
+    ok
+    rows_affected: 0
+
+statement 5:
+  sql:
+    EXPLAIN SELECT id, name FROM widgets WHERE id = 1
+  result:
+    query
+    columns:
+      [0] query_plan VARCHAR
+    rows:
+      [0] "Project(columns=[id INTEGER NOT NULL, name VARCHAR(20)])"
+      [1] "  Filter(predicate=id = 1)"
+      [2] "    Scan(table=public.widgets, columns=[id INTEGER NOT NULL, name VARCHAR(20), active BOOLEAN])"
+
+statement 6:
+  sql:
+    EXPLAIN SELECT id FROM active_widget_ids WHERE id = 1
+  result:
+    query
+    columns:
+      [0] query_plan VARCHAR
+    rows:
+      [0] "Project(columns=[id INTEGER NOT NULL])"
+      [1] "  Filter(predicate=id = 1)"
+      [2] "    Scan(table=public.active_widget_ids, columns=[id INTEGER NOT NULL])"
+
+statement 7:
+  sql:
+    EXPLAIN (SELECT id FROM widgets UNION ALL SELECT id FROM widgets)
+  result:
+    query
+    columns:
+      [0] query_plan VARCHAR
+    rows:
+      [0] "SetOp(operator=UNION, quantifier=ALL)"
+      [1] "  Project(columns=[id INTEGER NOT NULL])"
+      [2] "    Scan(table=public.widgets, columns=[id INTEGER NOT NULL, name VARCHAR(20), active BOOLEAN])"
+      [3] "  Project(columns=[id INTEGER NOT NULL])"
+      [4] "    Scan(table=public.widgets, columns=[id INTEGER NOT NULL, name VARCHAR(20), active BOOLEAN])"
+
+statement 8:
+  sql:
+    EXPLAIN ANALYZE SELECT id FROM widgets
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:1 (offset 0): EXPLAIN ANALYZE is not supported

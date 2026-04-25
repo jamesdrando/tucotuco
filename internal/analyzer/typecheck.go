@@ -48,6 +48,8 @@ func (p *typeCheckPass) checkStatement(node parser.Node) {
 	switch node := node.(type) {
 	case parser.QueryExpr:
 		p.checkQuery(node)
+	case *parser.ExplainStmt:
+		p.checkExplain(node)
 	case *parser.InsertStmt:
 		p.checkInsert(node)
 	case *parser.UpdateStmt:
@@ -56,7 +58,20 @@ func (p *typeCheckPass) checkStatement(node parser.Node) {
 		p.checkDelete(node)
 	case *parser.CreateTableStmt:
 		p.checkCreateTable(node)
+	case *parser.CreateViewStmt:
+		p.checkCreateView(node)
 	}
+}
+
+func (p *typeCheckPass) checkExplain(stmt *parser.ExplainStmt) {
+	if stmt == nil {
+		return
+	}
+	if stmt.Analyze {
+		return
+	}
+
+	p.checkQuery(stmt.Query)
 }
 
 func (p *typeCheckPass) checkQuery(query parser.QueryExpr) []sqtypes.TypeDesc {
@@ -232,6 +247,9 @@ func (p *typeCheckPass) checkInsert(stmt *parser.InsertStmt) {
 	if stmt == nil {
 		return
 	}
+	if p.writeTargetIsView(stmt.Table) {
+		return
+	}
 
 	targets := p.insertTargetColumns(stmt)
 	p.checkInsertMissingColumns(stmt)
@@ -261,6 +279,9 @@ func (p *typeCheckPass) checkInsert(stmt *parser.InsertStmt) {
 
 func (p *typeCheckPass) checkUpdate(stmt *parser.UpdateStmt) {
 	if stmt == nil {
+		return
+	}
+	if p.writeTargetIsView(stmt.Table) {
 		return
 	}
 
@@ -308,6 +329,9 @@ func (p *typeCheckPass) checkDelete(stmt *parser.DeleteStmt) {
 	if stmt == nil || stmt.Where == nil {
 		return
 	}
+	if p.writeTargetIsView(stmt.Table) {
+		return
+	}
 
 	p.requireBoolean(stmt.Where, p.exprType(stmt.Where), "DELETE WHERE clause")
 }
@@ -342,6 +366,17 @@ func (p *typeCheckPass) checkCreateTable(stmt *parser.CreateTableStmt) {
 
 	for _, constraint := range stmt.Constraints {
 		p.checkConstraint(constraint, "table constraint")
+	}
+}
+
+func (p *typeCheckPass) checkCreateView(stmt *parser.CreateViewStmt) {
+	if stmt == nil {
+		return
+	}
+
+	outputs := p.checkQuery(stmt.Query)
+	if len(stmt.Columns) != 0 && len(stmt.Columns) != len(outputs) {
+		p.addError(sqlStateSyntaxError, stmt.Pos(), "CREATE VIEW declares %d columns for %d query columns", len(stmt.Columns), len(outputs))
 	}
 }
 

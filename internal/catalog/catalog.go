@@ -15,6 +15,8 @@ var (
 	ErrInvalidSchemaDescriptor = errors.New("catalog: invalid schema descriptor")
 	// ErrInvalidTableDescriptor reports a nil or malformed table descriptor.
 	ErrInvalidTableDescriptor = errors.New("catalog: invalid table descriptor")
+	// ErrInvalidViewDescriptor reports a nil or malformed view descriptor.
+	ErrInvalidViewDescriptor = errors.New("catalog: invalid view descriptor")
 	// ErrInvalidColumnDescriptor reports a nil or malformed column descriptor.
 	ErrInvalidColumnDescriptor = errors.New("catalog: invalid column descriptor")
 	// ErrInvalidExpressionDescriptor reports a nil or malformed SQL expression descriptor.
@@ -43,17 +45,25 @@ var (
 	ErrTableExists = errors.New("catalog: table already exists")
 	// ErrTableNotFound reports a missing table.
 	ErrTableNotFound = errors.New("catalog: table not found")
+	// ErrViewExists reports an attempt to create a duplicate view.
+	ErrViewExists = errors.New("catalog: view already exists")
+	// ErrViewNotFound reports a missing view.
+	ErrViewNotFound = errors.New("catalog: view not found")
 	// ErrColumnNotFound reports a missing column.
 	ErrColumnNotFound = errors.New("catalog: column not found")
 )
 
-// Catalog exposes schema and table metadata operations.
+// Catalog exposes schema, table, and view metadata operations.
 type Catalog interface {
 	CreateSchema(*SchemaDescriptor) error
 	DropSchema(string) error
+	LookupSchema(string) (*SchemaDescriptor, error)
 	CreateTable(*TableDescriptor) error
 	DropTable(storage.TableID) error
 	LookupTable(storage.TableID) (*TableDescriptor, error)
+	CreateView(*ViewDescriptor) error
+	DropView(storage.TableID) error
+	LookupView(storage.TableID) (*ViewDescriptor, error)
 	LookupColumn(storage.TableID, string) (*ColumnDescriptor, error)
 }
 
@@ -69,6 +79,14 @@ type TableDescriptor struct {
 	Columns     []ColumnDescriptor
 	Constraints []ConstraintDescriptor
 	Periods     []PeriodDescriptor
+}
+
+// ViewDescriptor describes a logical view and its derived output columns.
+type ViewDescriptor struct {
+	ID          storage.TableID
+	Columns     []ColumnDescriptor
+	Query       ExpressionDescriptor
+	CheckOption string
 }
 
 // ColumnDescriptor describes a single table column and its DDL metadata.
@@ -265,6 +283,43 @@ func validateTableDescriptor(desc *TableDescriptor) error {
 			return fmt.Errorf("%w: duplicate period %q", ErrInvalidTableDescriptor, period.Kind)
 		}
 		seenPeriods[period.Kind] = struct{}{}
+	}
+
+	return nil
+}
+
+func validateViewDescriptor(desc *ViewDescriptor) error {
+	if desc == nil {
+		return ErrInvalidViewDescriptor
+	}
+	if err := validateTableID(desc.ID); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidViewDescriptor, err)
+	}
+	if len(desc.Columns) == 0 {
+		return ErrInvalidViewDescriptor
+	}
+	for index := range desc.Columns {
+		column := desc.Columns[index]
+		column.Default = nil
+		column.Generated = nil
+		column.Identity = nil
+		column.Constraints = nil
+		if err := validateColumnDescriptor(&column); err != nil {
+			return fmt.Errorf("%w: column %d: %w", ErrInvalidViewDescriptor, index, err)
+		}
+		for previous := 0; previous < index; previous++ {
+			if desc.Columns[previous].Name == desc.Columns[index].Name {
+				return fmt.Errorf("%w: duplicate column %q", ErrInvalidViewDescriptor, desc.Columns[index].Name)
+			}
+		}
+	}
+	if err := validateExpressionDescriptor(&desc.Query); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidViewDescriptor, err)
+	}
+	switch desc.CheckOption {
+	case "", "CASCADED", "LOCAL":
+	default:
+		return fmt.Errorf("%w: invalid check option %q", ErrInvalidViewDescriptor, desc.CheckOption)
 	}
 
 	return nil
@@ -559,6 +614,26 @@ func cloneTableDescriptor(desc *TableDescriptor) *TableDescriptor {
 	}
 	clone.Constraints = cloneConstraintDescriptors(desc.Constraints)
 	clone.Periods = slices.Clone(desc.Periods)
+
+	return &clone
+}
+
+func cloneViewDescriptor(desc *ViewDescriptor) *ViewDescriptor {
+	if desc == nil {
+		return nil
+	}
+
+	clone := ViewDescriptor{
+		ID:          desc.ID,
+		Query:       *cloneExpressionDescriptor(&desc.Query),
+		CheckOption: desc.CheckOption,
+	}
+	if len(desc.Columns) > 0 {
+		clone.Columns = make([]ColumnDescriptor, len(desc.Columns))
+		for index := range desc.Columns {
+			clone.Columns[index] = *cloneColumnDescriptor(desc.Columns[index])
+		}
+	}
 
 	return &clone
 }

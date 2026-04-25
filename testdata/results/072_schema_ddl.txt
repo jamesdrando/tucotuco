@@ -1,0 +1,63 @@
+fixture: 072_schema_ddl
+
+statement 1:
+  sql:
+    CREATE SCHEMA sales
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    CREATE TABLE sales.orders (id INTEGER NOT NULL, label VARCHAR(20))
+  result:
+    ok
+    rows_affected: 0
+
+statement 3:
+  sql:
+    INSERT INTO sales.orders VALUES (1, 'open')
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    SELECT sales.orders.id, sales.orders.label FROM sales.orders WHERE sales.orders.id = 1
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+      [1] label VARCHAR(20)
+    rows:
+      [0] 1 | "open"
+
+statement 5:
+  sql:
+    DROP SCHEMA sales
+  result:
+    error
+    diagnostics:
+      [0] catalog: schema is not empty
+
+statement 6:
+  sql:
+    DROP TABLE sales.orders
+  result:
+    ok
+    rows_affected: 0
+
+statement 7:
+  sql:
+    DROP SCHEMA sales
+  result:
+    ok
+    rows_affected: 0
+
+statement 8:
+  sql:
+    DROP SCHEMA sales
+  result:
+    error
+    diagnostics:
+      [0] catalog: schema not found

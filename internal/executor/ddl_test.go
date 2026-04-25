@@ -19,6 +19,25 @@ func TestDDLOperatorsLifecycle(t *testing.T) {
 		operator func(t *testing.T) Operator
 	}{
 		{
+			name: "create schema",
+			operator: func(t *testing.T) Operator {
+				t.Helper()
+
+				return NewCreateSchema(catalog.NewMemory(), &catalog.SchemaDescriptor{Name: "tenant"})
+			},
+		},
+		{
+			name: "drop schema",
+			operator: func(t *testing.T) Operator {
+				t.Helper()
+
+				cat := catalog.NewMemory()
+				mustCreateDDLSchema(t, cat, "tenant")
+
+				return NewDropSchema(cat, "tenant")
+			},
+		},
+		{
 			name: "create table",
 			operator: func(t *testing.T) Operator {
 				t.Helper()
@@ -35,6 +54,27 @@ func TestDDLOperatorsLifecycle(t *testing.T) {
 				mustCreateDDLTable(t, cat, ddlTableDescriptor())
 
 				return NewDropTable(cat, nil, nil, ddlTableDescriptor().ID)
+			},
+		},
+		{
+			name: "create view",
+			operator: func(t *testing.T) Operator {
+				t.Helper()
+
+				return NewCreateView(newDDLCatalog(t), ddlViewDescriptor())
+			},
+		},
+		{
+			name: "drop view",
+			operator: func(t *testing.T) Operator {
+				t.Helper()
+
+				cat := newDDLCatalog(t)
+				if err := cat.CreateView(ddlViewDescriptor()); err != nil {
+					t.Fatalf("CreateView() error = %v", err)
+				}
+
+				return NewDropView(cat, ddlViewDescriptor().ID)
 			},
 		},
 	}
@@ -84,6 +124,37 @@ func TestDDLOperatorsNextReturnsEOFRepeatedly(t *testing.T) {
 		name     string
 		operator func(t *testing.T) Operator
 	}{
+		{
+			name: "create schema",
+			operator: func(t *testing.T) Operator {
+				t.Helper()
+
+				cat := catalog.NewMemory()
+				t.Cleanup(func() {
+					if err := cat.CreateTable(ddlTableDescriptorInSchema("tenant")); err != nil {
+						t.Fatalf("CreateTable() after schema create error = %v", err)
+					}
+				})
+
+				return NewCreateSchema(cat, &catalog.SchemaDescriptor{Name: "tenant"})
+			},
+		},
+		{
+			name: "drop schema",
+			operator: func(t *testing.T) Operator {
+				t.Helper()
+
+				cat := catalog.NewMemory()
+				mustCreateDDLSchema(t, cat, "tenant")
+				t.Cleanup(func() {
+					if err := cat.CreateTable(ddlTableDescriptorInSchema("tenant")); !errors.Is(err, catalog.ErrSchemaNotFound) {
+						t.Fatalf("CreateTable() after schema drop error = %v, want %v", err, catalog.ErrSchemaNotFound)
+					}
+				})
+
+				return NewDropSchema(cat, "tenant")
+			},
+		},
 		{
 			name: "create table",
 			operator: func(t *testing.T) Operator {
@@ -144,6 +215,125 @@ func TestDDLOperatorsNextReturnsEOFRepeatedly(t *testing.T) {
 
 			if err := operator.Close(); err != nil {
 				t.Fatalf("Close() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestCreateSchemaUsesCatalogValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, cat *catalog.Memory)
+		desc  *catalog.SchemaDescriptor
+		want  error
+	}{
+		{
+			name: "duplicate schema",
+			setup: func(t *testing.T, cat *catalog.Memory) {
+				t.Helper()
+
+				mustCreateDDLSchema(t, cat, "tenant")
+			},
+			desc: &catalog.SchemaDescriptor{Name: "tenant"},
+			want: catalog.ErrSchemaExists,
+		},
+		{
+			name:  "invalid schema descriptor",
+			setup: func(*testing.T, *catalog.Memory) {},
+			desc:  &catalog.SchemaDescriptor{Name: ""},
+			want:  catalog.ErrInvalidSchemaDescriptor,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cat := catalog.NewMemory()
+			tc.setup(t, cat)
+
+			operator := NewCreateSchema(cat, tc.desc)
+
+			if err := operator.Open(); !errors.Is(err, tc.want) {
+				t.Fatalf("Open() error = %v, want %v", err, tc.want)
+			}
+
+			if _, err := operator.Next(); !errors.Is(err, ErrOperatorNotOpen) {
+				t.Fatalf("Next() after failed Open error = %v, want %v", err, ErrOperatorNotOpen)
+			}
+
+			if err := operator.Close(); err != nil {
+				t.Fatalf("Close() after failed Open error = %v", err)
+			}
+
+			if err := operator.Close(); err != nil {
+				t.Fatalf("second Close() after failed Open error = %v", err)
+			}
+		})
+	}
+}
+
+func TestDropSchemaUsesCatalogValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, cat *catalog.Memory)
+		schemaName string
+		want       error
+	}{
+		{
+			name:       "missing schema",
+			setup:      func(*testing.T, *catalog.Memory) {},
+			schemaName: "missing",
+			want:       catalog.ErrSchemaNotFound,
+		},
+		{
+			name: "non-empty schema",
+			setup: func(t *testing.T, cat *catalog.Memory) {
+				t.Helper()
+
+				mustCreateDDLSchema(t, cat, "tenant")
+				mustCreateDDLTable(t, cat, ddlTableDescriptorInSchema("tenant"))
+			},
+			schemaName: "tenant",
+			want:       catalog.ErrSchemaNotEmpty,
+		},
+		{
+			name:       "invalid schema name",
+			setup:      func(*testing.T, *catalog.Memory) {},
+			schemaName: "",
+			want:       catalog.ErrInvalidSchemaName,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cat := catalog.NewMemory()
+			tc.setup(t, cat)
+
+			operator := NewDropSchema(cat, tc.schemaName)
+
+			if err := operator.Open(); !errors.Is(err, tc.want) {
+				t.Fatalf("Open() error = %v, want %v", err, tc.want)
+			}
+
+			if _, err := operator.Next(); !errors.Is(err, ErrOperatorNotOpen) {
+				t.Fatalf("Next() after failed Open error = %v, want %v", err, ErrOperatorNotOpen)
+			}
+
+			if err := operator.Close(); err != nil {
+				t.Fatalf("Close() after failed Open error = %v", err)
+			}
+
+			if err := operator.Close(); err != nil {
+				t.Fatalf("second Close() after failed Open error = %v", err)
 			}
 		})
 	}
@@ -380,11 +570,17 @@ func newDDLCatalog(t *testing.T) *catalog.Memory {
 	t.Helper()
 
 	cat := catalog.NewMemory()
-	if err := cat.CreateSchema(&catalog.SchemaDescriptor{Name: "public"}); err != nil {
-		t.Fatalf("CreateSchema() error = %v", err)
-	}
+	mustCreateDDLSchema(t, cat, "public")
 
 	return cat
+}
+
+func mustCreateDDLSchema(t *testing.T, cat *catalog.Memory, name string) {
+	t.Helper()
+
+	if err := cat.CreateSchema(&catalog.SchemaDescriptor{Name: name}); err != nil {
+		t.Fatalf("CreateSchema() error = %v", err)
+	}
 }
 
 func mustCreateDDLTable(t *testing.T, cat *catalog.Memory, desc *catalog.TableDescriptor) {
@@ -423,6 +619,24 @@ func ddlTableDescriptor() *catalog.TableDescriptor {
 				Expression: &catalog.ExpressionDescriptor{SQL: "char_length(name) > 0"},
 			},
 		},
+	}
+}
+
+func ddlTableDescriptorInSchema(schema string) *catalog.TableDescriptor {
+	desc := ddlTableDescriptor()
+	desc.ID.Schema = schema
+
+	return desc
+}
+
+func ddlViewDescriptor() *catalog.ViewDescriptor {
+	return &catalog.ViewDescriptor{
+		ID: storage.TableID{Schema: "public", Name: "widget_names"},
+		Columns: []catalog.ColumnDescriptor{
+			{Name: "id", Type: types.TypeDesc{Kind: types.TypeKindInteger}},
+			{Name: "name", Type: types.TypeDesc{Kind: types.TypeKindVarChar, Length: 32, Nullable: true}},
+		},
+		Query: catalog.ExpressionDescriptor{SQL: "SELECT id, name FROM widgets"},
 	}
 }
 

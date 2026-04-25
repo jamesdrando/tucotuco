@@ -71,6 +71,18 @@ func testTableDescriptor() *TableDescriptor {
 	}
 }
 
+func testViewDescriptor() *ViewDescriptor {
+	return &ViewDescriptor{
+		ID: storage.TableID{Schema: "public", Name: "widget_names"},
+		Columns: []ColumnDescriptor{
+			{Name: "id", Type: types.TypeDesc{Kind: types.TypeKindInteger, Nullable: false}},
+			{Name: "name", Type: types.TypeDesc{Kind: types.TypeKindVarChar, Length: 32, Nullable: true}},
+		},
+		Query:       ExpressionDescriptor{SQL: "SELECT id, name FROM widgets"},
+		CheckOption: "CASCADED",
+	}
+}
+
 func buildPersistenceCatalog(t *testing.T) *Memory {
 	t.Helper()
 
@@ -169,6 +181,31 @@ func TestSaveFileAndLoadFileRoundTrip(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "schema table and view metadata",
+			seed: func(t *testing.T, cat *Memory) {
+				t.Helper()
+				if err := cat.CreateSchema(testSchemaDescriptor()); err != nil {
+					t.Fatalf("CreateSchema() error = %v", err)
+				}
+				if err := cat.CreateTable(testTableDescriptor()); err != nil {
+					t.Fatalf("CreateTable() error = %v", err)
+				}
+				if err := cat.CreateView(testViewDescriptor()); err != nil {
+					t.Fatalf("CreateView() error = %v", err)
+				}
+			},
+			assert: func(t *testing.T, cat *Memory) {
+				t.Helper()
+				got, err := cat.LookupView(testViewDescriptor().ID)
+				if err != nil {
+					t.Fatalf("LookupView() error = %v", err)
+				}
+				if !reflect.DeepEqual(got, testViewDescriptor()) {
+					t.Fatalf("LookupView() = %#v, want %#v", got, testViewDescriptor())
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -191,6 +228,37 @@ func TestSaveFileAndLoadFileRoundTrip(t *testing.T) {
 
 			tc.assert(t, loaded)
 		})
+	}
+}
+
+func TestSaveFileAndLoadFileRoundTripAfterDropSchema(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "catalog.json")
+	cat := NewMemory()
+	if err := cat.CreateSchema(&SchemaDescriptor{Name: "public"}); err != nil {
+		t.Fatalf("CreateSchema(public) error = %v", err)
+	}
+	if err := cat.CreateSchema(&SchemaDescriptor{Name: "scratch"}); err != nil {
+		t.Fatalf("CreateSchema(scratch) error = %v", err)
+	}
+	if err := cat.DropSchema("scratch"); err != nil {
+		t.Fatalf("DropSchema() error = %v", err)
+	}
+
+	if err := SaveFile(path, cat); err != nil {
+		t.Fatalf("SaveFile() error = %v", err)
+	}
+
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	if _, err := loaded.LookupSchema("public"); err != nil {
+		t.Fatalf("LookupSchema(public) error = %v", err)
+	}
+	if _, err := loaded.LookupSchema("scratch"); !errors.Is(err, ErrSchemaNotFound) {
+		t.Fatalf("LookupSchema(scratch) error = %v, want %v", err, ErrSchemaNotFound)
 	}
 }
 

@@ -232,6 +232,14 @@ type SetOpExpr struct {
 
 func (*SetOpExpr) queryExpr() {}
 
+// ExplainStmt captures an EXPLAIN wrapper around a query expression.
+type ExplainStmt struct {
+	token.Span
+
+	Query   QueryExpr
+	Analyze bool
+}
+
 // SelectItem captures one SELECT-list expression with an optional alias.
 type SelectItem struct {
 	token.Span
@@ -392,6 +400,38 @@ type DropTableStmt struct {
 	token.Span
 
 	Name *QualifiedName
+}
+
+// CreateViewStmt captures a CREATE VIEW statement.
+type CreateViewStmt struct {
+	token.Span
+
+	Name        *QualifiedName
+	Columns     []*Identifier
+	Query       QueryExpr
+	CheckOption string
+}
+
+// DropViewStmt captures a DROP VIEW statement.
+type DropViewStmt struct {
+	token.Span
+
+	Name *QualifiedName
+}
+
+// CreateSchemaStmt captures a CREATE SCHEMA statement.
+type CreateSchemaStmt struct {
+	token.Span
+
+	Name *Identifier
+}
+
+// DropSchemaStmt captures a DROP SCHEMA statement.
+type DropSchemaStmt struct {
+	token.Span
+
+	Name     *Identifier
+	Behavior string
 }
 
 // BeginStmt captures BEGIN with its optional mode keyword.

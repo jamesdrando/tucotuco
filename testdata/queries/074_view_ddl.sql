@@ -1,0 +1,11 @@
+CREATE SCHEMA tenant;
+CREATE TABLE tenant.widgets (id INTEGER NOT NULL, name VARCHAR(20), active BOOLEAN);
+INSERT INTO tenant.widgets VALUES (1, 'alice', TRUE);
+INSERT INTO tenant.widgets VALUES (2, 'bob', FALSE);
+CREATE VIEW tenant.active_widgets (widget_id, widget_name) AS SELECT id, name FROM tenant.widgets WHERE active = TRUE WITH LOCAL CHECK OPTION;
+SELECT widget_id, widget_name FROM tenant.active_widgets;
+INSERT INTO tenant.active_widgets VALUES (3, 'carol');
+CREATE TABLE tenant.active_widgets (id INTEGER);
+DROP SCHEMA tenant;
+DROP VIEW tenant.active_widgets;
+SELECT * FROM tenant.active_widgets;

@@ -200,6 +200,8 @@ func (p *Parser) parseStatement() (Node, bool) {
 		return p.parseRollback(), true
 	case tok.IsKeyword("SELECT"):
 		return p.parseQueryExpression(), true
+	case tokenMatchesWord(tok, "EXPLAIN"):
+		return p.parseExplain(), true
 	case tok.IsKeyword("INSERT"):
 		return p.parseInsert(), true
 	case tok.IsKeyword("UPDATE"):
@@ -211,10 +213,30 @@ func (p *Parser) parseStatement() (Node, bool) {
 	case tok.IsKeyword("DROP"):
 		return p.parseDrop(), true
 	default:
-		p.addError(tok, fmt.Sprintf("expected BEGIN, COMMIT, ROLLBACK, SELECT, INSERT, UPDATE, DELETE, CREATE, or DROP, found %s", describeToken(tok)))
+		p.addError(tok, fmt.Sprintf("expected BEGIN, COMMIT, ROLLBACK, SELECT, EXPLAIN, INSERT, UPDATE, DELETE, CREATE, or DROP, found %s", describeToken(tok)))
 
 		return nil, false
 	}
+}
+
+func (p *Parser) parseExplain() *ExplainStmt {
+	explainTok := p.consumeSignificant()
+	stmt := &ExplainStmt{
+		Span: token.Span{
+			Start: explainTok.Pos(),
+			Stop:  explainTok.End(),
+		},
+	}
+
+	if p.consumeWord("ANALYZE") {
+		stmt.Analyze = true
+		stmt.Stop = p.lastConsumed().End()
+	}
+
+	stmt.Query = p.parseQueryExpression()
+	stmt.Stop = spanFromNode(stmt.Query, stmt.Stop)
+
+	return stmt
 }
 
 func (p *Parser) parseBegin() *BeginStmt {
@@ -820,13 +842,18 @@ func (p *Parser) parseDelete() *DeleteStmt {
 
 func (p *Parser) parseCreate() Node {
 	createTok := p.consumeSignificant()
-	if !p.consumeKeyword("TABLE") {
+	switch {
+	case p.consumeKeyword("TABLE"):
+		return p.parseCreateTable(createTok)
+	case p.consumeKeyword("VIEW"):
+		return p.parseCreateView(createTok)
+	case p.consumeKeyword("SCHEMA"):
+		return p.parseCreateSchema(createTok)
+	default:
 		tok := p.peekSignificant()
-		p.addError(tok, fmt.Sprintf("expected TABLE after CREATE, found %s", describeToken(tok)))
+		p.addError(tok, fmt.Sprintf("expected TABLE, VIEW, or SCHEMA after CREATE, found %s", describeToken(tok)))
 		return nil
 	}
-
-	return p.parseCreateTable(createTok)
 }
 
 func (p *Parser) parseCreateTable(createTok token.Token) *CreateTableStmt {
@@ -1094,12 +1121,21 @@ func (p *Parser) parseReferenceSpec(start token.Pos) *ReferenceSpec {
 
 func (p *Parser) parseDrop() Node {
 	dropTok := p.consumeSignificant()
-	if !p.consumeKeyword("TABLE") {
+	switch {
+	case p.consumeKeyword("TABLE"):
+		return p.parseDropTable(dropTok)
+	case p.consumeKeyword("VIEW"):
+		return p.parseDropView(dropTok)
+	case p.consumeKeyword("SCHEMA"):
+		return p.parseDropSchema(dropTok)
+	default:
 		tok := p.peekSignificant()
-		p.addError(tok, fmt.Sprintf("expected TABLE after DROP, found %s", describeToken(tok)))
+		p.addError(tok, fmt.Sprintf("expected TABLE, VIEW, or SCHEMA after DROP, found %s", describeToken(tok)))
 		return nil
 	}
+}
 
+func (p *Parser) parseDropTable(dropTok token.Token) *DropTableStmt {
 	stmt := &DropTableStmt{
 		Span: token.Span{
 			Start: dropTok.Pos(),
@@ -1109,6 +1145,100 @@ func (p *Parser) parseDrop() Node {
 
 	stmt.Name = p.parseQualifiedName(false)
 	stmt.Stop = spanFromNode(stmt.Name, stmt.Stop)
+
+	return stmt
+}
+
+func (p *Parser) parseCreateView(createTok token.Token) *CreateViewStmt {
+	stmt := &CreateViewStmt{
+		Span: token.Span{
+			Start: createTok.Pos(),
+			Stop:  p.lastConsumed().End(),
+		},
+	}
+
+	stmt.Name = p.parseQualifiedName(false)
+	stmt.Stop = spanFromNode(stmt.Name, stmt.Stop)
+
+	if p.matchPunctuation("(") {
+		columns, stop := p.parseParenthesizedIdentifierList("CREATE VIEW column list")
+		stmt.Columns = columns
+		stmt.Stop = stop
+	}
+
+	p.expectKeyword("AS")
+	stmt.Stop = spanEnd(p.lastConsumed(), stmt.Stop)
+
+	stmt.Query = p.parseQueryExpression()
+	stmt.Stop = spanFromNode(stmt.Query, stmt.Stop)
+
+	if p.consumeKeyword("WITH") {
+		stmt.CheckOption = "CASCADED"
+		stmt.Stop = p.lastConsumed().End()
+		switch {
+		case p.consumeKeyword("CASCADED"):
+			stmt.CheckOption = "CASCADED"
+			stmt.Stop = p.lastConsumed().End()
+		case p.consumeKeyword("LOCAL"):
+			stmt.CheckOption = "LOCAL"
+			stmt.Stop = p.lastConsumed().End()
+		}
+		p.expectKeyword("CHECK")
+		stmt.Stop = spanEnd(p.lastConsumed(), stmt.Stop)
+		p.expectKeyword("OPTION")
+		stmt.Stop = spanEnd(p.lastConsumed(), stmt.Stop)
+	}
+
+	return stmt
+}
+
+func (p *Parser) parseDropView(dropTok token.Token) *DropViewStmt {
+	stmt := &DropViewStmt{
+		Span: token.Span{
+			Start: dropTok.Pos(),
+			Stop:  p.lastConsumed().End(),
+		},
+	}
+
+	stmt.Name = p.parseQualifiedName(false)
+	stmt.Stop = spanFromNode(stmt.Name, stmt.Stop)
+
+	return stmt
+}
+
+func (p *Parser) parseCreateSchema(createTok token.Token) *CreateSchemaStmt {
+	stmt := &CreateSchemaStmt{
+		Span: token.Span{
+			Start: createTok.Pos(),
+			Stop:  p.lastConsumed().End(),
+		},
+	}
+
+	stmt.Name = p.parseIdentifierToken(false)
+	stmt.Stop = spanFromNode(stmt.Name, stmt.Stop)
+
+	return stmt
+}
+
+func (p *Parser) parseDropSchema(dropTok token.Token) *DropSchemaStmt {
+	stmt := &DropSchemaStmt{
+		Span: token.Span{
+			Start: dropTok.Pos(),
+			Stop:  p.lastConsumed().End(),
+		},
+	}
+
+	stmt.Name = p.parseIdentifierToken(false)
+	stmt.Stop = spanFromNode(stmt.Name, stmt.Stop)
+
+	switch {
+	case p.consumeKeyword("CASCADE"):
+		stmt.Behavior = "CASCADE"
+		stmt.Stop = p.lastConsumed().End()
+	case p.consumeKeyword("RESTRICT"):
+		stmt.Behavior = "RESTRICT"
+		stmt.Stop = p.lastConsumed().End()
+	}
 
 	return stmt
 }
@@ -1988,6 +2118,26 @@ func (p *Parser) parseTypeSpec() *TypeName {
 
 func (p *Parser) matchKeyword(word string) bool {
 	return p.peekSignificant().IsKeyword(word)
+}
+
+func (p *Parser) consumeWord(word string) bool {
+	if !tokenMatchesWord(p.peekSignificant(), word) {
+		return false
+	}
+
+	p.consumeSignificant()
+	return true
+}
+
+func tokenMatchesWord(tok token.Token, word string) bool {
+	if tok.IsKeyword(word) {
+		return true
+	}
+	if tok.Kind != token.KindIdentifier {
+		return false
+	}
+
+	return strings.EqualFold(tok.Lexeme, word)
 }
 
 func (p *Parser) consumeKeyword(word string) bool {

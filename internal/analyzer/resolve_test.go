@@ -79,6 +79,45 @@ func TestResolverResolvesDerivedTableColumns(t *testing.T) {
 	}
 }
 
+func TestResolverResolvesViewColumnsAsCatalogRelation(t *testing.T) {
+	t.Parallel()
+
+	cat := testCatalog(t)
+	if err := cat.CreateSchema(&catalog.SchemaDescriptor{Name: "sales"}); err != nil {
+		t.Fatalf("CreateSchema() error = %v", err)
+	}
+	if err := cat.CreateView(&catalog.ViewDescriptor{
+		ID: storage.TableID{Schema: "sales", Name: "order_totals"},
+		Columns: []catalog.ColumnDescriptor{
+			{Name: "id", Type: types.TypeDesc{Kind: types.TypeKindInteger, Nullable: true}},
+			{Name: "total", Type: types.TypeDesc{Kind: types.TypeKindInteger, Nullable: true}},
+		},
+		Query: catalog.ExpressionDescriptor{SQL: "SELECT id, total FROM orders"},
+	}); err != nil {
+		t.Fatalf("CreateView() error = %v", err)
+	}
+	script := parseScript(t, "SELECT sales.order_totals.total FROM sales.order_totals")
+
+	bindings, diags := NewResolver(cat).ResolveScript(script)
+	if len(diags) != 0 {
+		t.Fatalf("ResolveScript() diagnostics = %#v, want none", diags)
+	}
+
+	stmt := script.Nodes[0].(*parser.SelectStmt)
+	column := stmt.SelectList[0].Expr.(*parser.QualifiedName)
+
+	binding, ok := bindings.Column(column)
+	if !ok {
+		t.Fatalf("Column(%T) missing binding", column)
+	}
+	if binding.Relation == nil || binding.Relation.View == nil {
+		t.Fatalf("binding.Relation = %#v, want view relation", binding.Relation)
+	}
+	if binding.Descriptor == nil || binding.Descriptor.Name != "total" {
+		t.Fatalf("binding.Descriptor = %#v, want descriptor for total", binding.Descriptor)
+	}
+}
+
 func TestResolverAllowsCorrelatedExpressionSubqueries(t *testing.T) {
 	t.Parallel()
 
@@ -220,6 +259,111 @@ func TestResolverResolvesCreateTableForeignKeys(t *testing.T) {
 	}
 }
 
+func TestResolverResolvesSchemaQualifiedTableAndColumn(t *testing.T) {
+	t.Parallel()
+
+	cat := testCatalog(t)
+	if err := cat.CreateSchema(&catalog.SchemaDescriptor{Name: "archive"}); err != nil {
+		t.Fatalf("CreateSchema() error = %v", err)
+	}
+	createTableInSchema(t, cat, "archive", "orders", "id", "archived_at")
+
+	script := parseScript(t, "SELECT archive.orders.id FROM archive.orders")
+
+	bindings, diags := NewResolver(cat).ResolveScript(script)
+	if len(diags) != 0 {
+		t.Fatalf("ResolveScript() diagnostics = %#v, want none", diags)
+	}
+
+	stmt := script.Nodes[0].(*parser.SelectStmt)
+	from := stmt.From[0].(*parser.FromSource)
+	table := from.Source.(*parser.QualifiedName)
+
+	relation, ok := bindings.Relation(table)
+	if !ok {
+		t.Fatalf("Relation(%T) missing binding", table)
+	}
+	if relation.TableID != (storage.TableID{Schema: "archive", Name: "orders"}) {
+		t.Fatalf("relation.TableID = %#v, want archive.orders", relation.TableID)
+	}
+
+	column := stmt.SelectList[0].Expr.(*parser.QualifiedName)
+	binding, ok := bindings.Column(column)
+	if !ok {
+		t.Fatalf("Column(%T) missing binding", column)
+	}
+	if binding.Relation == nil || binding.Relation.TableID != (storage.TableID{Schema: "archive", Name: "orders"}) {
+		t.Fatalf("binding.Relation = %#v, want archive.orders relation", binding.Relation)
+	}
+	if binding.Descriptor == nil || binding.Descriptor.Name != "id" {
+		t.Fatalf("binding.Descriptor = %#v, want descriptor for id", binding.Descriptor)
+	}
+}
+
+func TestResolverDisambiguatesSchemaQualifiedColumns(t *testing.T) {
+	t.Parallel()
+
+	cat := testCatalog(t)
+	if err := cat.CreateSchema(&catalog.SchemaDescriptor{Name: "tenant"}); err != nil {
+		t.Fatalf("CreateSchema() error = %v", err)
+	}
+	if err := cat.CreateSchema(&catalog.SchemaDescriptor{Name: "archive"}); err != nil {
+		t.Fatalf("CreateSchema() error = %v", err)
+	}
+	createTableInSchema(t, cat, "tenant", "orders", "id", "customer_id")
+	createTableInSchema(t, cat, "archive", "orders", "id", "archived_at")
+
+	script := parseScript(t, "SELECT archive.orders.id FROM tenant.orders INNER JOIN archive.orders ON tenant.orders.id = archive.orders.id")
+
+	bindings, diags := NewResolver(cat).ResolveScript(script)
+	if len(diags) != 0 {
+		t.Fatalf("ResolveScript() diagnostics = %#v, want none", diags)
+	}
+
+	stmt := script.Nodes[0].(*parser.SelectStmt)
+	column := stmt.SelectList[0].Expr.(*parser.QualifiedName)
+
+	binding, ok := bindings.Column(column)
+	if !ok {
+		t.Fatalf("Column(%T) missing binding", column)
+	}
+	if binding.Relation == nil || binding.Relation.TableID != (storage.TableID{Schema: "archive", Name: "orders"}) {
+		t.Fatalf("binding.Relation = %#v, want archive.orders relation", binding.Relation)
+	}
+}
+
+func TestResolverResolvesSchemaQualifiedStar(t *testing.T) {
+	t.Parallel()
+
+	cat := testCatalog(t)
+	if err := cat.CreateSchema(&catalog.SchemaDescriptor{Name: "archive"}); err != nil {
+		t.Fatalf("CreateSchema() error = %v", err)
+	}
+	createTableInSchema(t, cat, "archive", "orders", "id", "archived_at")
+
+	script := parseScript(t, "SELECT archive.orders.* FROM archive.orders")
+
+	bindings, diags := NewResolver(cat).ResolveScript(script)
+	if len(diags) != 0 {
+		t.Fatalf("ResolveScript() diagnostics = %#v, want none", diags)
+	}
+
+	stmt := script.Nodes[0].(*parser.SelectStmt)
+	star := stmt.SelectList[0].Expr.(*parser.Star)
+	columns, ok := bindings.Star(star)
+	if !ok {
+		t.Fatalf("Star(%T) missing binding", star)
+	}
+	if len(columns) != 2 {
+		t.Fatalf("len(columns) = %d, want 2", len(columns))
+	}
+	for _, column := range columns {
+		if column.Relation == nil || column.Relation.TableID != (storage.TableID{Schema: "archive", Name: "orders"}) {
+			t.Fatalf("column.Relation = %#v, want archive.orders relation", column.Relation)
+		}
+	}
+}
+
 func TestResolverReportsUndefinedColumn(t *testing.T) {
 	t.Parallel()
 
@@ -292,6 +436,12 @@ func testCatalog(t *testing.T) catalog.Catalog {
 func createTable(t *testing.T, cat catalog.Catalog, tableName string, columnNames ...string) {
 	t.Helper()
 
+	createTableInSchema(t, cat, "public", tableName, columnNames...)
+}
+
+func createTableInSchema(t *testing.T, cat catalog.Catalog, schemaName string, tableName string, columnNames ...string) {
+	t.Helper()
+
 	columns := make([]catalog.ColumnDescriptor, 0, len(columnNames))
 	for _, name := range columnNames {
 		columns = append(columns, catalog.ColumnDescriptor{
@@ -305,12 +455,12 @@ func createTable(t *testing.T, cat catalog.Catalog, tableName string, columnName
 
 	if err := cat.CreateTable(&catalog.TableDescriptor{
 		ID: storage.TableID{
-			Schema: "public",
+			Schema: schemaName,
 			Name:   tableName,
 		},
 		Columns: columns,
 	}); err != nil {
-		t.Fatalf("CreateTable(%q) error = %v", tableName, err)
+		t.Fatalf("CreateTable(%q.%q) error = %v", schemaName, tableName, err)
 	}
 }
 

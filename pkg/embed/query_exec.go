@@ -3,9 +3,11 @@ package embed
 import (
 	"errors"
 	"io"
+	"strings"
 
 	"github.com/jamesdrando/tucotuco/internal/executor"
 	"github.com/jamesdrando/tucotuco/internal/parser"
+	"github.com/jamesdrando/tucotuco/internal/planner"
 )
 
 func (s *session) query(sql string) (*ResultSet, error) {
@@ -14,12 +16,18 @@ func (s *session) query(sql string) (*ResultSet, error) {
 		return nil, err
 	}
 
-	query, ok := node.(parser.QueryExpr)
-	if !ok {
+	switch node := node.(type) {
+	case parser.QueryExpr:
+		return s.queryRows(node, ctx)
+	case *parser.ExplainStmt:
+		return s.explainQuery(node, ctx)
+	default:
 		return nil, featureError(node, "Query only supports SELECT query expressions")
 	}
+}
 
-	operator, columns, err := buildQueryOperator(query, ctx.bindings, ctx.types, s.store, s.tx)
+func (s *session) queryRows(query parser.QueryExpr, ctx *analysisContext) (*ResultSet, error) {
+	operator, columns, err := buildQueryOperator(query, ctx.bindings, ctx.types, s.cat, s.store, s.tx)
 	if err != nil {
 		return nil, err
 	}
@@ -41,6 +49,31 @@ func (s *session) query(sql string) (*ResultSet, error) {
 	}
 	for _, row := range rows {
 		result.Rows = append(result.Rows, exportRow(row))
+	}
+
+	return result, nil
+}
+
+func (s *session) explainQuery(stmt *parser.ExplainStmt, ctx *analysisContext) (*ResultSet, error) {
+	if stmt == nil {
+		return nil, internalError(nil, "EXPLAIN statement is nil")
+	}
+	if stmt.Analyze {
+		return nil, featureError(stmt, "EXPLAIN ANALYZE is not supported")
+	}
+
+	plan, diags := planner.NewBuilder(ctx.bindings, ctx.types).Build(stmt.Query)
+	if len(diags) != 0 {
+		return nil, diagnosticsError(diags)
+	}
+
+	lines := strings.Split(planner.Explain(plan), "\n")
+	result := &ResultSet{
+		Columns: []Column{{Name: "query_plan", Type: "VARCHAR"}},
+		Rows:    make([][]any, 0, len(lines)),
+	}
+	for _, line := range lines {
+		result.Rows = append(result.Rows, []any{line})
 	}
 
 	return result, nil

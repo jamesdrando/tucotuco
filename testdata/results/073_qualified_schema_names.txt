@@ -1,0 +1,129 @@
+fixture: 073_qualified_schema_names
+
+statement 1:
+  sql:
+    CREATE SCHEMA sales
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    CREATE SCHEMA archive
+  result:
+    ok
+    rows_affected: 0
+
+statement 3:
+  sql:
+    CREATE TABLE sales.widgets (id INTEGER NOT NULL, label VARCHAR(20))
+  result:
+    ok
+    rows_affected: 0
+
+statement 4:
+  sql:
+    CREATE TABLE archive.widgets (id INTEGER NOT NULL, label VARCHAR(20))
+  result:
+    ok
+    rows_affected: 0
+
+statement 5:
+  sql:
+    INSERT INTO sales.widgets VALUES (1, 'sales')
+  result:
+    ok
+    rows_affected: 1
+
+statement 6:
+  sql:
+    INSERT INTO archive.widgets VALUES (1, 'archive')
+  result:
+    ok
+    rows_affected: 1
+
+statement 7:
+  sql:
+    SELECT sales.widgets.id, sales.widgets.label FROM sales.widgets WHERE sales.widgets.id = 1
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+      [1] label VARCHAR(20)
+    rows:
+      [0] 1 | "sales"
+
+statement 8:
+  sql:
+    SELECT archive.widgets.id, archive.widgets.label FROM archive.widgets WHERE archive.widgets.id = 1
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+      [1] label VARCHAR(20)
+    rows:
+      [0] 1 | "archive"
+
+statement 9:
+  sql:
+    UPDATE sales.widgets SET label = 'closed' WHERE sales.widgets.id = 1
+  result:
+    ok
+    rows_affected: 1
+
+statement 10:
+  sql:
+    DELETE FROM archive.widgets WHERE archive.widgets.id = 1
+  result:
+    ok
+    rows_affected: 1
+
+statement 11:
+  sql:
+    SELECT sales.widgets.id, sales.widgets.label FROM sales.widgets
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+      [1] label VARCHAR(20)
+    rows:
+      [0] 1 | "closed"
+
+statement 12:
+  sql:
+    SELECT archive.widgets.id, archive.widgets.label FROM archive.widgets
+  result:
+    query
+    columns:
+      [0] id INTEGER NOT NULL
+      [1] label VARCHAR(20)
+    rows:
+      <empty>
+
+statement 13:
+  sql:
+    DROP TABLE sales.widgets
+  result:
+    ok
+    rows_affected: 0
+
+statement 14:
+  sql:
+    DROP TABLE archive.widgets
+  result:
+    ok
+    rows_affected: 0
+
+statement 15:
+  sql:
+    DROP SCHEMA sales
+  result:
+    ok
+    rows_affected: 0
+
+statement 16:
+  sql:
+    DROP SCHEMA archive
+  result:
+    ok
+    rows_affected: 0

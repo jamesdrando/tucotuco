@@ -56,6 +56,35 @@ func TestTypeCheckerAssignsDerivedTableTypes(t *testing.T) {
 	}
 }
 
+func TestTypeCheckerAssignsSchemaQualifiedColumnTypes(t *testing.T) {
+	t.Parallel()
+
+	cat := emptyAnalyzerCatalog(t)
+	if err := cat.CreateSchema(&catalog.SchemaDescriptor{Name: "archive"}); err != nil {
+		t.Fatalf("CreateSchema() error = %v", err)
+	}
+	if err := cat.CreateTable(&catalog.TableDescriptor{
+		ID: storage.TableID{Schema: "archive", Name: "orders"},
+		Columns: []catalog.ColumnDescriptor{
+			{Name: "id", Type: mustAnalyzerTypeDesc(t, "BIGINT NOT NULL")},
+		},
+	}); err != nil {
+		t.Fatalf("CreateTable() error = %v", err)
+	}
+
+	script := parseScript(t, "SELECT archive.orders.id FROM archive.orders")
+
+	typed, diags := typeCheckSQL(t, cat, script)
+	if len(diags) != 0 {
+		t.Fatalf("CheckScript() diagnostics = %#v, want none", diags)
+	}
+
+	stmt := script.Nodes[0].(*parser.SelectStmt)
+	if got, ok := typed.Expr(stmt.SelectList[0].Expr); !ok || got != mustAnalyzerTypeDesc(t, "BIGINT NOT NULL") {
+		t.Fatalf("Expr(schema-qualified column) = (%#v, %t), want BIGINT NOT NULL", got, ok)
+	}
+}
+
 func TestTypeCheckerAssignsSetOpTypes(t *testing.T) {
 	t.Parallel()
 
@@ -420,6 +449,24 @@ func TestTypeCheckerValidatesCreateTableDefaults(t *testing.T) {
 	_, diags := typeCheckSQL(t, cat, script)
 	if len(diags) != 0 {
 		t.Fatalf("CheckScript() diagnostics = %#v, want none", diags)
+	}
+}
+
+func TestTypeCheckerValidatesCreateViewColumnCount(t *testing.T) {
+	t.Parallel()
+
+	cat := mixedTypeCatalog(t)
+	script := parseScript(t, "CREATE VIEW one_name (id_only) AS SELECT id, total FROM orders")
+
+	_, diags := typeCheckSQL(t, cat, script)
+	if len(diags) != 1 {
+		t.Fatalf("len(diagnostics) = %d, want 1", len(diags))
+	}
+	if diags[0].SQLState != sqlStateSyntaxError {
+		t.Fatalf("diagnostic SQLSTATE = %q, want %q", diags[0].SQLState, sqlStateSyntaxError)
+	}
+	if diags[0].Message != "CREATE VIEW declares 1 columns for 2 query columns" {
+		t.Fatalf("diagnostic message = %q", diags[0].Message)
 	}
 }
 

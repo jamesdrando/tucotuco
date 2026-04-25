@@ -1,0 +1,87 @@
+fixture: 074_view_ddl
+
+statement 1:
+  sql:
+    CREATE SCHEMA tenant
+  result:
+    ok
+    rows_affected: 0
+
+statement 2:
+  sql:
+    CREATE TABLE tenant.widgets (id INTEGER NOT NULL, name VARCHAR(20), active BOOLEAN)
+  result:
+    ok
+    rows_affected: 0
+
+statement 3:
+  sql:
+    INSERT INTO tenant.widgets VALUES (1, 'alice', TRUE)
+  result:
+    ok
+    rows_affected: 1
+
+statement 4:
+  sql:
+    INSERT INTO tenant.widgets VALUES (2, 'bob', FALSE)
+  result:
+    ok
+    rows_affected: 1
+
+statement 5:
+  sql:
+    CREATE VIEW tenant.active_widgets (widget_id, widget_name) AS SELECT id, name FROM tenant.widgets WHERE active = TRUE WITH LOCAL CHECK OPTION
+  result:
+    ok
+    rows_affected: 0
+
+statement 6:
+  sql:
+    SELECT widget_id, widget_name FROM tenant.active_widgets
+  result:
+    query
+    columns:
+      [0] widget_id INTEGER NOT NULL
+      [1] widget_name VARCHAR(20)
+    rows:
+      [0] 1 | "alice"
+
+statement 7:
+  sql:
+    INSERT INTO tenant.active_widgets VALUES (3, 'carol')
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 0A000] at 1:13 (offset 12): writes to views are not supported
+
+statement 8:
+  sql:
+    CREATE TABLE tenant.active_widgets (id INTEGER)
+  result:
+    error
+    diagnostics:
+      [0] catalog: table already exists
+
+statement 9:
+  sql:
+    DROP SCHEMA tenant
+  result:
+    error
+    diagnostics:
+      [0] catalog: schema is not empty
+
+statement 10:
+  sql:
+    DROP VIEW tenant.active_widgets
+  result:
+    ok
+    rows_affected: 0
+
+statement 11:
+  sql:
+    SELECT * FROM tenant.active_widgets
+  result:
+    error
+    diagnostics:
+      [0] ERROR [SQLSTATE 42P01] at 1:15 (offset 14): table "tenant.active_widgets" does not exist
+      [1] ERROR [SQLSTATE 42703] at 1:8 (offset 7): cannot resolve * without a FROM source

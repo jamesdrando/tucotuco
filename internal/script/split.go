@@ -89,9 +89,16 @@ func SplitStatements(text string) []string {
 	return statements
 }
 
-// IsSelectStatement reports whether the statement's first token is SELECT.
+// IsSelectStatement reports whether the statement's first token should use the
+// query path. It preserves its historical name while routing EXPLAIN as a
+// query-producing statement.
 func IsSelectStatement(statement string) bool {
-	return firstKeyword(statement) == "SELECT"
+	switch firstKeyword(statement) {
+	case "SELECT", "EXPLAIN":
+		return true
+	default:
+		return false
+	}
 }
 
 func firstKeyword(statement string) string {

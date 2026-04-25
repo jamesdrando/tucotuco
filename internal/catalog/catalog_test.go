@@ -62,6 +62,13 @@ func TestMemoryCatalogLifecycle(t *testing.T) {
 	if err := cat.CreateSchema(schema); err != nil {
 		t.Fatalf("CreateSchema() error = %v", err)
 	}
+	gotSchema, err := cat.LookupSchema(schema.Name)
+	if err != nil {
+		t.Fatalf("LookupSchema() error = %v", err)
+	}
+	if *gotSchema != *schema {
+		t.Fatalf("LookupSchema() = %#v, want %#v", gotSchema, schema)
+	}
 	if err := cat.CreateTable(table); err != nil {
 		t.Fatalf("CreateTable() error = %v", err)
 	}
@@ -132,6 +139,9 @@ func TestMemoryCatalogLifecycle(t *testing.T) {
 	if err := cat.DropSchema(schema.Name); err != nil {
 		t.Fatalf("DropSchema() error = %v", err)
 	}
+	if _, err := cat.LookupSchema(schema.Name); !errors.Is(err, catalog.ErrSchemaNotFound) {
+		t.Fatalf("LookupSchema() after drop error = %v, want %v", err, catalog.ErrSchemaNotFound)
+	}
 }
 
 func TestMemoryCatalogZeroValueIsUsable(t *testing.T) {
@@ -152,11 +162,102 @@ func TestMemoryCatalogZeroValueIsUsable(t *testing.T) {
 	if err := cat.CreateTable(table); err != nil {
 		t.Fatalf("CreateTable() error = %v", err)
 	}
+	if _, err := cat.LookupSchema(schema.Name); err != nil {
+		t.Fatalf("LookupSchema() error = %v", err)
+	}
 	if _, err := cat.LookupTable(table.ID); err != nil {
 		t.Fatalf("LookupTable() error = %v", err)
 	}
 	if _, err := cat.LookupColumn(table.ID, "id"); err != nil {
 		t.Fatalf("LookupColumn() error = %v", err)
+	}
+}
+
+func TestMemoryCatalogViewLifecycleAndCollisions(t *testing.T) {
+	t.Parallel()
+
+	cat := catalog.NewMemory()
+	if err := cat.CreateSchema(&catalog.SchemaDescriptor{Name: "public"}); err != nil {
+		t.Fatalf("CreateSchema() error = %v", err)
+	}
+
+	view := &catalog.ViewDescriptor{
+		ID: storage.TableID{Schema: "public", Name: "active_widgets"},
+		Columns: []catalog.ColumnDescriptor{
+			{Name: "id", Type: types.TypeDesc{Kind: types.TypeKindInteger, Nullable: false}},
+			{Name: "name", Type: types.TypeDesc{Kind: types.TypeKindVarChar, Length: 32, Nullable: true}},
+		},
+		Query:       catalog.ExpressionDescriptor{SQL: "SELECT id, name FROM widgets"},
+		CheckOption: "LOCAL",
+	}
+	if err := cat.CreateView(view); err != nil {
+		t.Fatalf("CreateView() error = %v", err)
+	}
+	if err := cat.DropSchema("public"); !errors.Is(err, catalog.ErrSchemaNotEmpty) {
+		t.Fatalf("DropSchema() with view error = %v, want %v", err, catalog.ErrSchemaNotEmpty)
+	}
+
+	got, err := cat.LookupView(view.ID)
+	if err != nil {
+		t.Fatalf("LookupView() error = %v", err)
+	}
+	if got.ID != view.ID || got.Query.SQL != view.Query.SQL || got.CheckOption != view.CheckOption {
+		t.Fatalf("LookupView() = %#v, want %#v", got, view)
+	}
+	got.Columns[0].Name = "mutated"
+	again, err := cat.LookupView(view.ID)
+	if err != nil {
+		t.Fatalf("LookupView() second error = %v", err)
+	}
+	if again.Columns[0].Name != "id" {
+		t.Fatalf("LookupView() returned mutable descriptor, column = %q", again.Columns[0].Name)
+	}
+
+	if err := cat.CreateTable(&catalog.TableDescriptor{
+		ID: storage.TableID{Schema: "public", Name: "active_widgets"},
+		Columns: []catalog.ColumnDescriptor{
+			{Name: "id", Type: types.TypeDesc{Kind: types.TypeKindInteger, Nullable: false}},
+		},
+	}); !errors.Is(err, catalog.ErrTableExists) {
+		t.Fatalf("CreateTable() colliding with view error = %v, want %v", err, catalog.ErrTableExists)
+	}
+	if err := cat.CreateView(view); !errors.Is(err, catalog.ErrViewExists) {
+		t.Fatalf("CreateView() duplicate error = %v, want %v", err, catalog.ErrViewExists)
+	}
+
+	if column, err := cat.LookupColumn(view.ID, "name"); err != nil || column.Name != "name" {
+		t.Fatalf("LookupColumn() through view = %#v, %v; want name column", column, err)
+	}
+	if err := cat.DropView(view.ID); err != nil {
+		t.Fatalf("DropView() error = %v", err)
+	}
+	if err := cat.DropSchema("public"); err != nil {
+		t.Fatalf("DropSchema() after DropView() error = %v", err)
+	}
+}
+
+func TestMemoryCatalogLookupSchemaReturnsCopy(t *testing.T) {
+	t.Parallel()
+
+	cat := catalog.NewMemory()
+	schema := &catalog.SchemaDescriptor{Name: "public", DefaultCollation: "unicode_ci"}
+	if err := cat.CreateSchema(schema); err != nil {
+		t.Fatalf("CreateSchema() error = %v", err)
+	}
+
+	got, err := cat.LookupSchema(schema.Name)
+	if err != nil {
+		t.Fatalf("LookupSchema() error = %v", err)
+	}
+	got.Name = "mutated"
+	got.DefaultCollation = "changed"
+
+	fresh, err := cat.LookupSchema(schema.Name)
+	if err != nil {
+		t.Fatalf("LookupSchema() fresh error = %v", err)
+	}
+	if *fresh != *schema {
+		t.Fatalf("fresh LookupSchema() = %#v, want %#v", fresh, schema)
 	}
 }
 
@@ -206,6 +307,9 @@ func TestMemoryCatalogRejectsDuplicatesAndMissingObjects(t *testing.T) {
 	if _, err := cat.LookupTable(storage.TableID{Schema: "missing", Name: "widgets"}); !errors.Is(err, catalog.ErrSchemaNotFound) {
 		t.Fatalf("LookupTable() missing schema error = %v, want %v", err, catalog.ErrSchemaNotFound)
 	}
+	if _, err := cat.LookupSchema("missing"); !errors.Is(err, catalog.ErrSchemaNotFound) {
+		t.Fatalf("LookupSchema() missing schema error = %v, want %v", err, catalog.ErrSchemaNotFound)
+	}
 	if _, err := cat.LookupColumn(tableID, "missing"); !errors.Is(err, catalog.ErrColumnNotFound) {
 		t.Fatalf("LookupColumn() missing column error = %v, want %v", err, catalog.ErrColumnNotFound)
 	}
@@ -230,6 +334,9 @@ func TestMemoryCatalogValidationErrorsWrapSentinels(t *testing.T) {
 
 	if err := cat.CreateSchema(&catalog.SchemaDescriptor{Name: ""}); !errors.Is(err, catalog.ErrInvalidSchemaDescriptor) || !errors.Is(err, catalog.ErrInvalidSchemaName) {
 		t.Fatalf("CreateSchema() error = %v, want chain to include %v and %v", err, catalog.ErrInvalidSchemaDescriptor, catalog.ErrInvalidSchemaName)
+	}
+	if _, err := cat.LookupSchema(""); !errors.Is(err, catalog.ErrInvalidSchemaName) {
+		t.Fatalf("LookupSchema() error = %v, want %v", err, catalog.ErrInvalidSchemaName)
 	}
 
 	if err := cat.CreateSchema(&catalog.SchemaDescriptor{Name: "public"}); err != nil {
